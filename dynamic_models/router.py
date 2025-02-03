@@ -18,12 +18,12 @@ def get_dynamic_model( request: Request , db: orm.Session = Depends(get_db)):
     for dynamic_model in dynamic_models:
         try:
             # print(dynamic_model.id)
-            fields = db.query(DynamicField).filter(DynamicField.dynamic_model_id == dynamic_model.id).all()
-            fields_data = [{'field_name': field.field_name , 'field_type': field.field_type} for field in fields]
+            # fields = db.query(DynamicField).filter(DynamicField.dynamic_model_id == dynamic_model.id).all()
+            # fields_data = [{'field_name': field.field_name , 'field_type': field.field_type} for field in fields]
 
             model_data = {
                     'model_name': dynamic_model.model_name,
-                    'fields': fields_data
+                    # 'fields': fields_data
                 }
             response_data.append(model_data)
         except Exception as e:
