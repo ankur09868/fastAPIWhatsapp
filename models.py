@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, BigInteger
+from sqlalchemy import Column, Integer, String, ForeignKey, LargeBinary, BigInteger, JSON
 from sqlalchemy.orm import relationship
 from config.database import Base
 
@@ -12,8 +12,9 @@ class Tenant(Base):
     spreadsheet_link = Column(String, nullable=True)
     catalog_id = Column(BigInteger, nullable=True)
     key = Column(LargeBinary, nullable=True)
+    tier = Column(String(20))
+    agents = Column(JSON, nullable=True)
 
-    # Corrected relationship names to match back_populates in Contact and Product models
     contacts = relationship("Contact", back_populates="tenant")
     whatsapp_chat_whatsapp_data = relationship("WhatsappTenantData", back_populates="tenant")
     products = relationship("Product", back_populates="tenant")

@@ -2,6 +2,7 @@ from fastapi import APIRouter, Request, Depends ,HTTPException, Header
 from sqlalchemy import orm
 from config.database import get_db
 from .models import WhatsappTenantData, MessageStatus, BroadcastGroups, MessageStatistics
+from models import Tenant
 from product.models import Product
 from typing import Optional
 from .schema import BroadcastGroupResponse, BroadcastGroupCreate
@@ -36,6 +37,9 @@ def get_whatsapp_tenant_data(x_tenant_id: Optional[str] = Header(None), bpid: Op
 
         # catalog_data = db.query(Product).filter(Product.tenant_id == tenant_id).all()
         # print("catalog: ", catalog_data)
+        tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        agents = tenantData.agents
+        whatsapp_data.append({"agents": agents})
         return {
             "whatsapp_data": whatsapp_data
             # "catalog_data": catalog_data
