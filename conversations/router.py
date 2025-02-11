@@ -109,7 +109,6 @@ async def view_conversation(
 
         print(contact_id, bpid, source)
 
-        # Pagination logic
         offset = (page_no - 1) * page_size
 
         # Query conversations for the contact_id with pagination
@@ -123,17 +122,15 @@ async def view_conversation(
             .order_by(Conversation.date_time.desc())
         )
         
-        # Get total conversations count for pagination metadata
         total_conversations = conversations_query.count()
 
-        # Apply pagination (limit and offset)
         conversations = conversations_query.offset(offset).limit(page_size).all()
         
         print("Conversations: ", conversations)
 
         # Format the conversations
         formatted_conversations = []
-        for conv in conversations:
+        for conv in reversed(conversations):
             text_to_append = conv.message_text
             encrypted_text = conv.encrypted_message_text
 
@@ -149,7 +146,6 @@ async def view_conversation(
                 "sender": conv.sender,
             })
 
-        # Calculate total number of pages
         total_pages = (total_conversations + page_size - 1) // page_size  # Round up
 
         return {
