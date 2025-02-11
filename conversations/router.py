@@ -120,7 +120,7 @@ async def view_conversation(
                 Conversation.business_phone_number_id == bpid,
                 Conversation.source == source,
             )
-            .order_by(Conversation.date_time)
+            .order_by(Conversation.date_time.desc())
         )
         
         # Get total conversations count for pagination metadata
