@@ -1,9 +1,10 @@
-from fastapi import APIRouter, Request, Depends, HTTPException, Header
-from sqlalchemy import orm
+from fastapi import APIRouter, Request, Depends, HTTPException, Header, encoders
+from sqlalchemy import orm, func, and_
 from config.database import get_db
 from .models import Notifications
 from typing import Optional
 from datetime import datetime, timedelta
+from contacts.models import Contact
 router = APIRouter()
 
 
@@ -97,21 +98,37 @@ def get_limited_notifications(
     
     total = db.query(Notifications).filter(Notifications.tenant_id == x_tenant_id).count()
 
-    total_pages = (total + limit - 1) // limit  # Round up
+    total_pages = (total + limit - 1) // limit
 
-    notifications = (
-            db.query(Notifications)
-            .filter(Notifications.tenant_id == x_tenant_id)
-            .offset(offset)
-            .limit(limit)
-            .all()
+    notifications_with_contacts = (
+        db.query(Notifications, Contact)
+        .outerjoin(
+            Contact,
+            and_(
+                Contact.phone == func.substr(Notifications.content, 1, 12),
+                Contact.tenant_id == Notifications.tenant_id
+            )
         )
+        .filter(Notifications.tenant_id == x_tenant_id)
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    # Process results
+    enhanced_notifications = []
+    for notification, contact in notifications_with_contacts:
+        notif_data = encoders.jsonable_encoder(notification)
+        if contact:
+            notif_data["contact_id"] = contact.id
+        enhanced_notifications.append(notif_data)
+
 
     return {
-        "contacts": notifications,
+        "contacts": enhanced_notifications,
         "page_no": page_no or None,
         "page_size": limit or None,
-        "total_contacts": len(notifications),
+        "total_contacts": len(enhanced_notifications),
         "total_pages": total_pages or None,
     }
 
@@ -127,4 +144,3 @@ def delete_notification(
     
     db.delete(notification)
     db.commit()
-    
