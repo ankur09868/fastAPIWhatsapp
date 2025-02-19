@@ -126,13 +126,14 @@ async def view_conversation(
 
         conversations = conversations_query.offset(offset).limit(page_size).all()
         
-        print("Conversations: ", conversations)
+        # print("Conversations: ", conversations)
 
         # Format the conversations
         formatted_conversations = []
         for conv in reversed(conversations):
             text_to_append = conv.message_text
             encrypted_text = conv.encrypted_message_text
+            time = conv.date_time
 
             if encrypted_text is not None:
                 decrypted_text = decrypt_data(bytes(encrypted_text), key=encryption_key)
@@ -144,6 +145,7 @@ async def view_conversation(
             formatted_conversations.append({
                 "text": text_to_append,
                 "sender": conv.sender,
+                "time": time
             })
 
         total_pages = (total_conversations + page_size - 1) // page_size  # Round up
