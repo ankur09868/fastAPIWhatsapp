@@ -74,10 +74,21 @@ def get_notifications(
     if day:
         today = datetime.now()
         that_day = today - timedelta(days=day)
-        notifications = db.query(Notifications).filter(Notifications.tenant_id == x_tenant_id).filter(Notifications.created_on == that_day)
+        notifications = (
+            db.query(Notifications)
+            .filter(Notifications.tenant_id == x_tenant_id)
+            .filter(Notifications.created_on == that_day)
+            .order_by(Notifications.created_on.desc())
+            .all()
+        )
     else:
-        notifications = db.query(Notifications).filter(Notifications.tenant_id == x_tenant_id).all()
-
+        notifications = (
+            db.query(Notifications)
+            .filter(Notifications.tenant_id == x_tenant_id)
+            .order_by(Notifications.created_on.desc())
+            .all()
+        )    
+        
     if not notifications:
         raise HTTPException(status_code=404, detail="No notifications found for the tenant.")
 
