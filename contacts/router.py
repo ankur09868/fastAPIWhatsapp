@@ -91,6 +91,7 @@ def read_contacts(request: Request, db: orm.Session = Depends(get_db)):
 
     return contacts
 
+from sqlalchemy import func
 @router.get("/contacts/{page_no}") 
 def get_limited_contacts(
     req: Request,
@@ -105,32 +106,62 @@ def get_limited_contacts(
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Tenant ID missing in headers")
 
-    if phone:
-        sql_query = text("""
-            SELECT *
-            FROM (
-                SELECT 
-                    ROW_NUMBER() OVER (ORDER BY id) AS row_num, *
-                FROM 
-                    contacts_contact
-                WHERE tenant_id = :tenant
-            ) AS subquery_result
-            WHERE 
-                phone = :phone;
-        """)
-        
-        result = db.execute(sql_query, {"phone": phone, "tenant": tenant_id}).fetchone()
-
-        if result is None:
-            raise HTTPException(status_code=404, detail=f"Contact not found with phone {phone}")
-        # print("Result ", result)
-        page_no = math.ceil(result[0] / 50 )
-        
     page_size = 300  # Number of contacts per page
+    
+    # If phone parameter is provided, return only that contact
+    if phone:
+        # First find the contact with the given phone number
+        contact = db.query(Contact).filter(
+            Contact.tenant_id == tenant_id,
+            Contact.phone == phone
+        ).first()
+        
+        if contact is None:
+            raise HTTPException(status_code=404, detail=f"Contact not found with phone {phone}")
+        
+        # Calculate which page this contact would be on
+        if order_by == "id" and sort_by == "asc":  # For default sorting
+            # Count how many contacts come before this one
+            position = db.query(func.count(Contact.id)).filter(
+                Contact.tenant_id == tenant_id,
+                Contact.id < contact.id
+            ).scalar()
+            
+            # Calculate page number
+            page_no = (position // page_size) + 1
+        else:
+            # For other sorting, we need a different approach
+            # Use the original SQL approach to find position
+            order_expr = getattr(Contact, order_by)
+            order_expr = order_expr.desc() if sort_by == "desc" else order_expr.asc()
+            
+            subquery = db.query(
+                Contact,
+                func.row_number().over(order_by=order_expr).label('row_num')
+            ).filter(Contact.tenant_id == tenant_id).subquery()
+            
+            result = db.query(subquery.c.row_num).filter(
+                subquery.c.id == contact.id
+            ).scalar()
+            
+            page_no = math.ceil(result / page_size)
+        
+        # Return only the matching contact
+        total_contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).count()
+        total_pages = (total_contacts + page_size - 1) // page_size
+        
+        return {
+            "contacts": [contact],  # Return only the matching contact in a list
+            "page_no": page_no,
+            "page_size": page_size,
+            "total_contacts": 1,  # Only one contact is returned
+            "total_pages": total_pages,
+        }
+    
+    # Regular pagination logic (unchanged)
     offset = page_size * (page_no - 1)
     
     total_contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).count()
-
     total_pages = (total_contacts + page_size - 1) // page_size 
 
     order_by_clause = nulls_last(getattr(Contact, order_by).desc()) if sort_by == "desc" else nulls_last(getattr(Contact, order_by).asc())
@@ -145,11 +176,71 @@ def get_limited_contacts(
 
     return {
         "contacts": contacts,
-        "page_no": page_no or None,
-        "page_size": page_size or None,
+        "page_no": page_no,
+        "page_size": page_size,
         "total_contacts": len(contacts),
-        "total_pages": total_pages or None,
+        "total_pages": total_pages,
     }
+
+# @router.get("/contacts/{page_no}") 
+# def get_limited_contacts(
+#     req: Request,
+#     page_no: int = 1,
+#     phone: Optional[str] = None,
+#     order_by: Optional[str] = "id",
+#     sort_by: Optional[str] = "asc",
+#     db: orm.Session = Depends(get_db),
+# ):
+    
+#     tenant_id = req.headers.get("X-Tenant-Id")
+#     if not tenant_id:
+#         raise HTTPException(status_code=400, detail="Tenant ID missing in headers")
+
+#     if phone:
+#         sql_query = text("""
+#             SELECT *
+#             FROM (
+#                 SELECT 
+#                     ROW_NUMBER() OVER (ORDER BY id) AS row_num, *
+#                 FROM 
+#                     contacts_contact
+#                 WHERE tenant_id = :tenant
+#             ) AS subquery_result
+#             WHERE 
+#                 phone = :phone;
+#         """)
+        
+#         result = db.execute(sql_query, {"phone": phone, "tenant": tenant_id}).fetchone()
+
+#         if result is None:
+#             raise HTTPException(status_code=404, detail=f"Contact not found with phone {phone}")
+#         # print("Result ", result)
+#         page_no = math.ceil(result[0] / 50 )
+        
+#     page_size = 300  # Number of contacts per page
+#     offset = page_size * (page_no - 1)
+    
+#     total_contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).count()
+
+#     total_pages = (total_contacts + page_size - 1) // page_size 
+
+#     order_by_clause = nulls_last(getattr(Contact, order_by).desc()) if sort_by == "desc" else nulls_last(getattr(Contact, order_by).asc())
+#     contacts = (
+#         db.query(Contact)
+#         .filter(Contact.tenant_id == tenant_id)
+#         .order_by(order_by_clause)
+#         .offset(offset)
+#         .limit(page_size)
+#         .all()
+#     )
+
+#     return {
+#         "contacts": contacts,
+#         "page_no": page_no or None,
+#         "page_size": page_size or None,
+#         "total_contacts": len(contacts),
+#         "total_pages": total_pages or None,
+#     }
 
 @router.patch("/contacts/")
 async def update_contact(request: Request, db: orm.Session = Depends(get_db)):
