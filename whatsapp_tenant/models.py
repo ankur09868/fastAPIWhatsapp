@@ -3,6 +3,21 @@ from sqlalchemy.orm import relationship
 from config.database import Base
 from datetime import datetime
 
+class WhatsappChatIndividualMessageStatistics(Base):
+    __tablename__ = "whatsapp_chat_individualmessagestatistics"
+    
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(255))
+    status = Column(String(50))
+    type = Column(String(50))
+    type_identifier = Column(String(255))
+    template_name = Column(String(255))
+    userPhone = Column(String(50))
+    tenant_id = Column(String(50), ForeignKey("tenant_tenant.id"), nullable=True)
+    bpid = Column(String(255))
+    timestamp = Column(DateTime)
+    
+    tenant = relationship("Tenant")  # No back
 
 class WhatsappTenantData(Base):
     __tablename__ = "whatsapp_chat_whatsapptenantdata"

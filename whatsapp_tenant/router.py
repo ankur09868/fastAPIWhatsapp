@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Request, Depends ,HTTPException, Header
 from sqlalchemy import orm
 from config.database import get_db
-from .models import WhatsappTenantData, MessageStatus, BroadcastGroups, MessageStatistics
+from .models import WhatsappTenantData, MessageStatus, BroadcastGroups, MessageStatistics, WhatsappChatIndividualMessageStatistics
 from models import Tenant
 from product.models import Product
 from typing import Optional
@@ -86,6 +86,9 @@ async def update_whatsapp_tenant_data(
 
 from sqlalchemy.exc import IntegrityError
 
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+
 @router.get("/refresh-status/")
 def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
     try:
@@ -93,17 +96,46 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
         if not tenant_id:
             raise HTTPException(status_code=400, detail="Missing Tenant ID in headers")
 
-        statuses = db.query(MessageStatus).filter(MessageStatus.tenant_id == tenant_id).all()
+        # Fetch all individual message statistics for this tenant
+        individual_stats = db.query(WhatsappChatIndividualMessageStatistics).filter(
+            WhatsappChatIndividualMessageStatistics.tenant_id == tenant_id
+        ).all()
 
-        groupedStatuses = {}
-        for status in statuses:
-            bg_group = status.broadcast_group
-            template_name = status.template_name
-            key = bg_group if bg_group else template_name
+        # Group by message_id to handle multiple statuses for the same message
+        message_status_map = {}
+        for stat in individual_stats:
+            if stat.message_id not in message_status_map:
+                message_status_map[stat.message_id] = {
+                    "template_name": stat.template_name or "Unknown",
+                    "status": set(),  # Use a set to track all statuses
+                    "timestamp": stat.timestamp,
+                    "userPhone": stat.userPhone,
+                    "type": stat.type
+                }
+            
+            # Add this status to the set
+            if stat.status:
+                message_status_map[stat.message_id]["status"].add(stat.status)
+            
+            # Update template name if available
+            if stat.template_name and not message_status_map[stat.message_id]["template_name"] == "Unknown":
+                message_status_map[stat.message_id]["template_name"] = stat.template_name
 
-            if key not in groupedStatuses:
-                groupedStatuses[key] = {
-                    "name": status.broadcast_group_name or None,
+        # Now process the consolidated message statuses
+        template_stats = {}
+        for message_id, data in message_status_map.items():
+            template_name = data["template_name"]
+            # Create a key using template name + date (YYYY-MM-DD)
+            try:
+                date_str = data["timestamp"].strftime("%Y-%m-%d") if data["timestamp"] else "unknown-date"
+            except:
+                date_str = "unknown-date"
+                
+            record_key = f"{template_name}_{date_str}"
+            
+            if record_key not in template_stats:
+                template_stats[record_key] = {
+                    "name": None,  # Group name (null if not available)
                     "sent": 0,
                     "delivered": 0,
                     "read": 0,
@@ -111,87 +143,89 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
                     "failed": 0,
                     "template_name": template_name
                 }
+            
+            # Convert set to list for JSON serialization
+            status_list = list(data["status"]) if "status" in data else []
+            
+            # Count statuses
+            if "sent" in status_list:
+                template_stats[record_key]["sent"] += 1
+            if "delivered" in status_list:
+                template_stats[record_key]["delivered"] += 1
+            if "read" in status_list:
+                template_stats[record_key]["read"] += 1
+            if "failed" in status_list:
+                template_stats[record_key]["failed"] += 1
+                
+            # For replies, we might need special logic
+            if data.get("type") == "reply" or "replied" in status_list:
+                template_stats[record_key]["replied"] += 1
 
-            if status.sent:
-                groupedStatuses[key]["sent"] += 1
-            if status.delivered:
-                groupedStatuses[key]["delivered"] += 1
-            if status.read:
-                groupedStatuses[key]["read"] += 1
-            if status.replied:
-                groupedStatuses[key]["replied"] += 1
-            if status.failed:
-                groupedStatuses[key]["failed"] += 1
+        # Update or create records in MessageStatistics table
+        updated_records = []
+        for record_key, stats in template_stats.items():
+            try:
+                existing_record = db.query(MessageStatistics).filter(
+                    MessageStatistics.tenant_id == tenant_id,
+                    MessageStatistics.record_key == record_key
+                ).first()
 
-        contacts = db.query(Contact).filter(Contact.tenant_id == tenant_id).order_by(Contact.id.asc()).all()
-
-        for contact in contacts:
-            key = contact.template_key or f"Untracked_{tenant_id}"
-            delivered = contact.last_delivered
-            replied = contact.last_replied
-
-            if delivered is None or replied is None:
-                continue
-
-            if key not in groupedStatuses:
-                groupedStatuses[key] = {
-                    "name": "Group B",
-                    "sent": 0,
-                    "delivered": 0,
-                    "read": 0,
-                    "replied": 0,
-                    "failed": 0,
-                    "template_name": "Untracked"
-                }
-
-            time_diff = contact.last_delivered - contact.last_replied
-            if time_diff < timedelta(minutes=1):
-                groupedStatuses[key]["replied"] += 1
-
-
-        for key, status_data in groupedStatuses.items():
-            existing_record = db.query(MessageStatistics).filter(
-                MessageStatistics.tenant_id == tenant_id,
-                MessageStatistics.record_key == key
-            ).first()
-
-            if existing_record:
-                existing_record.name = status_data["name"]
-                existing_record.sent = status_data["sent"]
-                existing_record.delivered = status_data["delivered"]
-                existing_record.read = status_data["read"]
-                existing_record.replied = status_data["replied"]
-                existing_record.failed = status_data["failed"]
-                existing_record.template_name = status_data["template_name"]
-            else:
-                # print(f"Creating new record for key: {key}")
-                # Create a new record
-                new_record = MessageStatistics(
-                    tenant_id=tenant_id,
-                    record_key=key,
-                    name=status_data["name"],
-                    sent=status_data["sent"],
-                    delivered=status_data["delivered"],
-                    read=status_data["read"],
-                    replied=status_data["replied"],
-                    failed=status_data["failed"],
-                    template_name=status_data["template_name"]
-                )
-                db.add(new_record)
+                if existing_record:
+                    # Update existing record
+                    existing_record.name = stats["name"]
+                    existing_record.sent = stats["sent"]
+                    existing_record.delivered = stats["delivered"]
+                    existing_record.read = stats["read"]
+                    existing_record.replied = stats["replied"]
+                    existing_record.failed = stats["failed"]
+                    existing_record.template_name = stats["template_name"]
+                    updated_records.append(record_key)
+                else:
+                    # Create a new record
+                    new_record = MessageStatistics(
+                        tenant_id=tenant_id,
+                        record_key=record_key,
+                        name=stats["name"],
+                        sent=stats["sent"],
+                        delivered=stats["delivered"],
+                        read=stats["read"],
+                        replied=stats["replied"],
+                        failed=stats["failed"],
+                        template_name=stats["template_name"]
+                    )
+                    db.add(new_record)
+                    updated_records.append(record_key)
+            except Exception as e:
+                print(f"Error processing record {record_key}: {str(e)}")
+                # Continue with other records
 
         # Commit changes to the database
         db.commit()
-        # print("Database commit successful")
-        return {"message": "Message statistics updated successfully"}
+        
+        # Use jsonable_encoder to properly handle all types
+        response_data = {
+            "message": "Message statistics updated successfully",
+            "updated_records": len(updated_records)
+        }
+        
+        return JSONResponse(content=jsonable_encoder(response_data))
 
     except IntegrityError as e:
         db.rollback()
         print(f"IntegrityError: {e}")
-        raise HTTPException(status_code=400, detail=f"Database integrity error: {str(e)}")
+        error_msg = f"Database integrity error: {str(e)}"
+        return JSONResponse(
+            content=jsonable_encoder({"detail": error_msg}),
+            status_code=400
+        )
     except Exception as e:
         db.rollback()
         print(f"Unexpected error: {e}")
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+        error_msg = f"An unexpected error occurred: {str(e)}"
+        return JSONResponse(
+            content=jsonable_encoder({"detail": error_msg}),
+            status_code=500
+        )
 
 
 @router.get("/get-status/")
