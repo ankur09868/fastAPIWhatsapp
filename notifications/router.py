@@ -155,3 +155,31 @@ def delete_notification(
     
     db.delete(notification)
     db.commit()
+
+@router.delete("/notification/all", status_code=204)
+def delete_all_notifications(
+    x_tenant_id: Optional[str] = Header(None, alias="X-Tenant-ID"),  # Correct header alias
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID is required in the header")
+
+    try:
+        # Convert tenant_id to int if necessary (only if stored as int in DB)
+        # tenant_id = int(x_tenant_id)  
+
+        notifications = db.query(Notifications).filter(Notifications.tenant_id == x_tenant_id).all()
+        print(f"Tenant ID: {x_tenant_id}, Notifications Found: {len(notifications)}")  # Debugging
+
+        if not notifications:
+            raise HTTPException(status_code=404, detail="No notifications found for this tenant")
+
+        # Bulk delete for efficiency
+        db.query(Notifications).filter(Notifications.tenant_id == x_tenant_id).delete(synchronize_session=False)
+        db.commit()
+        
+        return {"message": "All notifications deleted successfully"}  # Only if status_code is 200
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=500, detail=f"Error deleting notifications: {str(e)}")
