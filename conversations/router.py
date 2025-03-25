@@ -11,10 +11,9 @@ import json
 from typing import Optional
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from fastapi_cache import FastAPICache
-from fastapi_cache.decorator import cache
 import time
 import logging
+from functools import lru_cache
 
 router = APIRouter()
 
@@ -24,6 +23,11 @@ logger = logging.getLogger(__name__)
 
 # Thread pool for parallel decryption
 thread_pool = ThreadPoolExecutor(max_workers=10)
+
+# Simple in-memory cache using LRU cache decorator
+# Set maxsize to the number of different conversation queries you expect to cache
+conversation_cache = {}
+CACHE_TTL = 60  # Cache TTL in seconds
 
 def decrypt_data(encrypted_data: bytes, key: bytes):
     try:
@@ -67,8 +71,17 @@ def decrypt_message(encrypted_text, encryption_key):
         logger.error(f"Message decryption error: {str(e)}")
         return None
 
+def get_cache_key(contact_id, source, bpid, page_no):
+    """Generate a cache key for the conversation query"""
+    return f"{contact_id}:{source}:{bpid}:{page_no}"
+
+def is_cache_valid(cache_entry):
+    """Check if a cache entry is still valid"""
+    if not cache_entry:
+        return False
+    return (time.time() - cache_entry['timestamp']) < CACHE_TTL
+
 @router.get("/whatsapp_convo_get/{contact_id}")
-@cache(expire=60, namespace="whatsapp_conversations")  # Cache for 1 minute
 async def view_conversation(
     contact_id: Optional[str],
     source: Optional[str] = Query(None),
@@ -79,11 +92,20 @@ async def view_conversation(
 ):
     """
     Get WhatsApp conversations for a contact with pagination.
-    Optimized with caching and parallel processing.
+    Optimized with in-memory caching and parallel processing.
     """
     start_time = time.time()
     
     try:
+        # Generate cache key
+        cache_key = get_cache_key(contact_id, source, bpid, page_no)
+        
+        # Check cache first
+        cache_entry = conversation_cache.get(cache_key)
+        if cache_entry and is_cache_valid(cache_entry):
+            logger.info(f"Cache hit for key: {cache_key}")
+            return cache_entry['data']
+            
         page_size = 50
         
         # Only select the key from tenant table
@@ -169,7 +191,8 @@ async def view_conversation(
         # Calculate processing time
         processing_time = time.time() - start_time
         
-        return {
+        # Prepare response
+        response = {
             "conversations": formatted_conversations,
             "page_no": page_no,
             "page_size": page_size,
@@ -177,6 +200,22 @@ async def view_conversation(
             "total_pages": total_pages,
             "processing_time_ms": round(processing_time * 1000, 2)  # For monitoring
         }
+        
+        # Store in cache
+        conversation_cache[cache_key] = {
+            'data': response,
+            'timestamp': time.time()
+        }
+        
+        # Implement cache size management
+        if len(conversation_cache) > 1000:  # Limit cache size
+            # Remove oldest entries when cache gets too large
+            oldest_keys = sorted(conversation_cache.keys(), 
+                                key=lambda k: conversation_cache[k]['timestamp'])[:200]
+            for key in oldest_keys:
+                conversation_cache.pop(key, None)
+                
+        return response
 
     except NoResultFound:
         raise HTTPException(status_code=404, detail="Data not found")
