@@ -136,7 +136,6 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
             if record_key not in template_stats:
                 template_stats[record_key] = {
                     "name": None,  # Group name (null if not available)
-                    "sent": 0,
                     "delivered": 0,
                     "read": 0,
                     "replied": 0,
@@ -147,9 +146,7 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
             # Convert set to list for JSON serialization
             status_list = list(data["status"]) if "status" in data else []
             
-            # Count statuses
-            if "sent" in status_list:
-                template_stats[record_key]["sent"] += 1
+            # Count statuses (except sent - we'll calculate it later)
             if "delivered" in status_list:
                 template_stats[record_key]["delivered"] += 1
             if "read" in status_list:
@@ -165,6 +162,9 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
         updated_records = []
         for record_key, stats in template_stats.items():
             try:
+                # Calculate sent as delivered + failed
+                stats["sent"] = stats["delivered"] + stats["failed"]
+                
                 existing_record = db.query(MessageStatistics).filter(
                     MessageStatistics.tenant_id == tenant_id,
                     MessageStatistics.record_key == record_key
@@ -173,7 +173,7 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
                 if existing_record:
                     # Update existing record
                     existing_record.name = stats["name"]
-                    existing_record.sent = stats["sent"]
+                    existing_record.sent = stats["sent"]  # Now this is delivered + failed
                     existing_record.delivered = stats["delivered"]
                     existing_record.read = stats["read"]
                     existing_record.replied = stats["replied"]
@@ -186,7 +186,7 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
                         tenant_id=tenant_id,
                         record_key=record_key,
                         name=stats["name"],
-                        sent=stats["sent"],
+                        sent=stats["sent"],  # Now this is delivered + failed
                         delivered=stats["delivered"],
                         read=stats["read"],
                         replied=stats["replied"],
@@ -226,7 +226,6 @@ def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
             content=jsonable_encoder({"detail": error_msg}),
             status_code=500
         )
-
 
 @router.get("/get-status/")
 def get_status( request: Request, db: orm.Session = Depends(get_db)):
