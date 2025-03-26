@@ -176,9 +176,12 @@ async def view_conversation(
         for i, conv in enumerate(reversed(conversations)):
             text_to_append = conv.message_text
             
+            # Calculate the original index in the non-reversed list
+            original_idx = len(conversations) - i - 1
+            
             # Use decrypted text if available
-            if i in decryption_results and decryption_results[i] is not None:
-                text_to_append = decryption_results[i]
+            if original_idx in decryption_results and decryption_results[original_idx] is not None:
+                text_to_append = decryption_results[original_idx]
                 
             formatted_conversations.append({
                 "text": text_to_append,
