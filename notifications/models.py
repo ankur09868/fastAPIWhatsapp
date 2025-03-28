@@ -11,6 +11,7 @@ class Notifications(Base):
     content = Column(Text)
     created_on = Column(DateTime, default=datetime.now())
     tenant_id = Column(String(50), ForeignKey("tenant_tenant.id"), nullable=True)
-    
+    contact_id = Column(Integer, ForeignKey("contacts_contact.id"), nullable=True) 
+     
     tenant = relationship("Tenant", back_populates="notifications")
-
+    contact = relationship("Contact", back_populates="notifications")
