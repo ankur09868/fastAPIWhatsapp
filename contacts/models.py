@@ -23,6 +23,8 @@ class Contact(Base):
     last_replied = Column(DateTime, default=datetime.utcnow, nullable=True)
     customField = Column(JSON, nullable=True)
 
+    notifications = relationship("Notifications", back_populates="contact")
+
 
     def __repr__(self):
         return f"<Contact(name={self.name})>"
