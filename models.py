@@ -26,7 +26,13 @@ class Tenant(Base):
     conversations = relationship("Conversation", back_populates="tenant")
     notifications = relationship("Notifications", back_populates="tenant")
     message_statistics = relationship("MessageStatistics", back_populates="tenant")
+    # catalogs = relationship("Catalog", back_populates="tenant")
     # retailer = relationship("Retailer", back_populates="tenant")
 
     def __repr__(self):
         return f"<Tenant(id={self.id}, organization={self.organization})>"
+    
+from catalog.models import Catalog
+
+# Now add the relationship
+Tenant.catalogs = relationship("Catalog", back_populates="tenant")
