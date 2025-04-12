@@ -7,7 +7,7 @@ from .models import Catalog
 
 router = APIRouter()
 
-@router.post("/catalog",  status_code=status.HTTP_201_CREATED)
+@router.post("/catalogid",  status_code=status.HTTP_201_CREATED)
 async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
     try:
         # Extracting headers and body
@@ -76,7 +76,7 @@ async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
             detail=f"Failed to create catalog: {str(e)}"
         )
 
-@router.put("/catalog/{catalog_id}", status_code=status.HTTP_200_OK)
+@router.put("/catalogid/{catalog_id}", status_code=status.HTTP_200_OK)
 async def update_catalog(
     catalog_id: int,
     request: Request, 
@@ -151,7 +151,7 @@ async def update_catalog(
             detail=f"Failed to update catalog: {str(e)}"
         )
     
-@router.get("/catalogs", )
+@router.get("/catalogids", )
 async def get_catalogs(
     request: Request,
     db: orm.Session = Depends(get_db)
