@@ -59,7 +59,7 @@ async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
             catalog_id=body['catalog_id'],
             spreadsheet_link=body['spreadsheet_link'],
             razorpay_key=body.get('razorpay_key'),  # Optional field
-            business_owner_phone_number=body.get('business_owner_phone_number'),  # Added this line
+            business_owner_phone_number=body.get('business_phone'),  # Added this line
             tenant_id=tenant_id
         )
         
@@ -132,7 +132,7 @@ async def update_catalog(
         
         # Added this block
         if 'business_owner_phone_number' in body:
-            catalog.business_owner_phone_number = body['business_owner_phone_number']
+            catalog.business_owner_phone_number = body['business_phone']
         
         # Save changes
         db.commit()
