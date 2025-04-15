@@ -11,5 +11,6 @@ class Catalog(Base):
     spreadsheet_link = Column(String, nullable=False)
     razorpay_key = Column(JSON, nullable=True)
     
+    business_owner_phone_number = Column(String(20), nullable=True)
     tenant_id = Column(String(50), ForeignKey("tenant_tenant.id"), nullable=True)
     tenant = relationship("Tenant", back_populates="catalogs")

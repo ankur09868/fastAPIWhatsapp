@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Request, Depends ,HTTPException, Header,status
+from fastapi import APIRouter, Request, Depends, HTTPException, Header, status
 from sqlalchemy import orm
 from config.database import get_db
 from typing import Optional
@@ -7,7 +7,7 @@ from .models import Catalog
 
 router = APIRouter()
 
-@router.post("/catalogid",  status_code=status.HTTP_201_CREATED)
+@router.post("/catalogid", status_code=status.HTTP_201_CREATED)
 async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
     try:
         # Extracting headers and body
@@ -36,6 +36,7 @@ async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
                 detail="catalog_id is required"
             )
         
+        
         if 'spreadsheet_link' not in body:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -58,6 +59,7 @@ async def create_catalog(request: Request, db: orm.Session = Depends(get_db)):
             catalog_id=body['catalog_id'],
             spreadsheet_link=body['spreadsheet_link'],
             razorpay_key=body.get('razorpay_key'),  # Optional field
+            business_owner_phone_number=body.get('business_owner_phone_number'),  # Added this line
             tenant_id=tenant_id
         )
         
@@ -115,10 +117,10 @@ async def update_catalog(
             )
         
         # Check if anything needs to be updated
-        if 'spreadsheet_link' not in body and 'razorpay_key' not in body:
+        if 'spreadsheet_link' not in body and 'razorpay_key' not in body and 'business_owner_phone_number' not in body:  # Modified this line
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="At least one field (spreadsheet_link or razorpay_key) must be provided for update"
+                detail="At least one field (spreadsheet_link, razorpay_key, or business_owner_phone_number) must be provided for update"  # Modified this line
             )
         
         # Update fields if provided
@@ -127,6 +129,10 @@ async def update_catalog(
             
         if 'razorpay_key' in body:
             catalog.razorpay_key = body['razorpay_key']
+        
+        # Added this block
+        if 'business_owner_phone_number' in body:
+            catalog.business_owner_phone_number = body['business_owner_phone_number']
         
         # Save changes
         db.commit()
@@ -137,6 +143,7 @@ async def update_catalog(
             "catalog_id": catalog.catalog_id,
             "spreadsheet_link": catalog.spreadsheet_link,
             "razorpay_key": catalog.razorpay_key,
+            "business_owner_phone_number": catalog.business_owner_phone_number,  # Added this line
             "tenant_id": catalog.tenant_id,
             "message": "Catalog updated successfully"
         }
