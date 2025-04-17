@@ -92,20 +92,11 @@ async def view_conversation(
 ):
     """
     Get WhatsApp conversations for a contact with pagination.
-    Optimized with in-memory caching and parallel processing.
+    Optimized with parallel processing.
     """
     start_time = time.time()
     
     try:
-        # Generate cache key
-        cache_key = get_cache_key(contact_id, source, bpid, page_no)
-        
-        # Check cache first
-        cache_entry = conversation_cache.get(cache_key)
-        if cache_entry and is_cache_valid(cache_entry):
-            logger.info(f"Cache hit for key: {cache_key}")
-            return cache_entry['data']
-            
         page_size = 50
         
         # Only select the key from tenant table
@@ -204,20 +195,6 @@ async def view_conversation(
             "processing_time_ms": round(processing_time * 1000, 2)  # For monitoring
         }
         
-        # Store in cache
-        conversation_cache[cache_key] = {
-            'data': response,
-            'timestamp': time.time()
-        }
-        
-        # Implement cache size management
-        if len(conversation_cache) > 1000:  # Limit cache size
-            # Remove oldest entries when cache gets too large
-            oldest_keys = sorted(conversation_cache.keys(), 
-                                key=lambda k: conversation_cache[k]['timestamp'])[:200]
-            for key in oldest_keys:
-                conversation_cache.pop(key, None)
-                
         return response
 
     except NoResultFound:

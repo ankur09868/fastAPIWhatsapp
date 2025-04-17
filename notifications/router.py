@@ -145,13 +145,9 @@ def get_notifications(
             .order_by(Notifications.created_on.desc())
             .all()
         )    
-        
-    if not notifications:
-        raise HTTPException(status_code=404, detail="No notifications found for the tenant.")
-
+    
+    # Return empty list instead of 404 error when no notifications are found
     return {"notifications": notifications}
-
-
 @router.get("/notifications/{page_no}")
 def get_limited_notifications(
     page_no: int,
