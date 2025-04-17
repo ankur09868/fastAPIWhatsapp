@@ -17,7 +17,7 @@ class BroadcastGroupResponse(BaseModel):
     members: Optional[List[dict]] = []
 
     class Config:
-        from_attributes = True
+        orm_mode = True
 
 
 class WhatsappTenantDataSchema(BaseModel):
@@ -37,5 +37,5 @@ class WhatsappTenantDataSchema(BaseModel):
     language: Optional[str]
 
     class Config:
-        from_attributes = True
+        orm_mode = True
         from_attributes = True  # Allows from_orm to work correctly
