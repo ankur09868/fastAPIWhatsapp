@@ -4,6 +4,7 @@ from config.middleware import add_cors_middleware
 import contacts.router, node_templates.router, scheduled_events.router, whatsapp_tenant.router
 import product.router, dynamic_models.router
 import conversations.router, emails, notifications.router
+import broadcast_analytics.router
 import catalog.router
 import flowsAPI.router 
 import logging
@@ -34,6 +35,7 @@ app.include_router(emails.router)
 app.include_router(notifications.router.router)
 app.include_router(flowsAPI.router.router)
 app.include_router(catalog.router.router)
+app.include_router(broadcast_analytics.router.router)
 
 @app.get("/")
 def read_root():
