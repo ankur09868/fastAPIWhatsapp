@@ -37,6 +37,7 @@ app.include_router(flowsAPI.router.router)
 app.include_router(catalog.router.router)
 app.include_router(broadcast_analytics.router.router)
 
+
 @app.get("/")
 def read_root():
     return {"message": "FastAPI server is running"}

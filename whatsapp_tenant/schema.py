@@ -19,6 +19,9 @@ class BroadcastGroupResponse(BaseModel):
     class Config:
         orm_mode = True
 
+class PromptUpdateRequest(BaseModel):
+    prompt: str
+
 
 class WhatsappTenantDataSchema(BaseModel):
     business_phone_number_id: Optional[int]
@@ -35,6 +38,7 @@ class WhatsappTenantDataSchema(BaseModel):
     spreadsheet_link: Optional[str]
     id: int
     language: Optional[str]
+    prompt:Optional[str]
 
     class Config:
         orm_mode = True

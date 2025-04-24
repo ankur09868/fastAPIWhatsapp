@@ -5,7 +5,7 @@ from .models import WhatsappTenantData, MessageStatus, BroadcastGroups, MessageS
 from models import Tenant
 from product.models import Product
 from typing import Optional
-from .schema import BroadcastGroupResponse, BroadcastGroupCreate
+from .schema import BroadcastGroupResponse, BroadcastGroupCreate,PromptUpdateRequest
 from .crud import create_broadcast_group, get_broadcast_group, get_all_broadcast_groups
 from typing import List, Optional
 from contacts.models import Contact
@@ -431,3 +431,84 @@ def create_or_update_message_statistics(name: str, tenant_id: str, data: dict, d
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
+
+
+@router.get("/prompt/fetch/")
+def get_whatsapp_prompt(
+    x_tenant_id: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-ID header")
+
+    tenant_data = db.query(WhatsappTenantData).filter_by(tenant_id=x_tenant_id).first()
+
+    if not tenant_data:
+        raise HTTPException(status_code=404, detail="Tenant data not found")
+
+    return {"tenant_id": x_tenant_id, "prompt": tenant_data.prompt}
+
+
+@router.post("/prompt/create/")
+def create_whatsapp_prompt(
+    data: PromptUpdateRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-ID header")
+
+    tenant_data = db.query(WhatsappTenantData).filter_by(tenant_id=x_tenant_id).first()
+
+    if not tenant_data:
+        raise HTTPException(status_code=404, detail="Tenant data not found")
+
+    if tenant_data.prompt:
+        raise HTTPException(status_code=400, detail="Prompt already exists. Use PATCH to update.")
+
+    tenant_data.prompt = data.prompt
+    db.commit()
+
+    return {"tenant_id": x_tenant_id, "prompt": tenant_data.prompt, "message": "Prompt added successfully"}
+
+
+@router.patch("/prompt/edit/")
+def update_whatsapp_prompt(
+    data: PromptUpdateRequest,
+    x_tenant_id: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-ID header")
+
+    tenant_data = db.query(WhatsappTenantData).filter_by(tenant_id=x_tenant_id).first()
+
+    if not tenant_data:
+        raise HTTPException(status_code=404, detail="Tenant data not found")
+
+    tenant_data.prompt = data.prompt
+    db.commit()
+
+    return {"tenant_id": x_tenant_id, "prompt": tenant_data.prompt, "message": "Prompt updated successfully"}
+
+
+@router.delete("/prompt/delete/")
+def delete_whatsapp_prompt(
+    x_tenant_id: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-ID header")
+
+    tenant_data = db.query(WhatsappTenantData).filter_by(tenant_id=x_tenant_id).first()
+
+    if not tenant_data:
+        raise HTTPException(status_code=404, detail="Tenant data not found")
+
+    if not tenant_data.prompt:
+        raise HTTPException(status_code=404, detail="No prompt to delete")
+
+    tenant_data.prompt = None
+    db.commit()
+
+    return {"tenant_id": x_tenant_id, "message": "Prompt deleted successfully"}
