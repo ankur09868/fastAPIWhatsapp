@@ -17,7 +17,14 @@ class BroadcastGroupResponse(BaseModel):
     members: Optional[List[dict]] = []
 
     class Config:
-        orm_mode = True
+        orm_mode = True     
+class BroadcastGroupAddContacts(BaseModel):
+    groupName: str
+    contacts: List[BroadcastGroupMember]
+
+class BroadcastGroupContactDelete(BaseModel):
+    groupName: str
+    contactPhone: int
 
 class PromptUpdateRequest(BaseModel):
     prompt: str
