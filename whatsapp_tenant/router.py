@@ -1,15 +1,20 @@
-from fastapi import APIRouter, Request, Depends ,HTTPException, Header
+from fastapi import APIRouter, Request, Depends ,HTTPException, Header, UploadFile, File, Form
 from sqlalchemy import orm
 from config.database import get_db
 from .models import WhatsappTenantData, MessageStatus, BroadcastGroups, MessageStatistics, WhatsappChatIndividualMessageStatistics
 from models import Tenant
 from product.models import Product
 from typing import Optional
-from .schema import BroadcastGroupResponse, BroadcastGroupCreate,PromptUpdateRequest
+from .schema import BroadcastGroupResponse, BroadcastGroupCreate,PromptUpdateRequest,BroadcastGroupContactDelete,BroadcastGroupAddContacts,BroadcastGroupMember
 from .crud import create_broadcast_group, get_broadcast_group, get_all_broadcast_groups
 from typing import List, Optional
 from contacts.models import Contact
 from datetime import timedelta
+import requests
+
+import pandas as pd
+from io import BytesIO
+
 router = APIRouter()
 
 @router.get("/whatsapp_tenant/")
@@ -391,6 +396,253 @@ def delete_group(group_id: str, db: orm.Session = Depends(get_db), x_tenant_id: 
         print("Error deleting group:", str(e))
         raise HTTPException(status_code=400, detail="Error deleting the broadcast group") from e
 
+#add new contact from broadcast group
+@router.post("/broadcast-groups/add-contacts/")
+async def create_contact_and_add_to_group(
+    payload: BroadcastGroupAddContacts,
+    request: Request,
+    db: orm.Session = Depends(get_db)
+):
+    tenant_id = request.headers.get("X-Tenant-Id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
+
+    existing_contacts = []
+    created_contacts = []
+
+    # ✅ Step 1: Deduplicate contacts by phone number
+    unique_contacts_dict = {}
+    for contact in payload.contacts:
+        unique_contacts_dict[contact.phone] = contact  # overwrite duplicates
+    deduplicated_contacts = list(unique_contacts_dict.values())
+
+    # Replace payload.contacts with deduplicated list
+    payload.contacts = deduplicated_contacts
+
+    # ✅ Step 2: Process each unique contact
+    for contact in payload.contacts:
+        phone = contact.phone
+        name = contact.name
+
+        # 2a. Check if contact exists
+        try:
+            check_response = requests.get(
+                f"https://backeng4whatsapp-dxbmgpakhzf9bped.centralindia-01.azurewebsites.net/contacts/?phone={phone}",
+                headers={"X-Tenant-Id": tenant_id}
+            )
+
+            if check_response.status_code == 200:
+                data = check_response.json()
+                if data:
+                    existing_contacts.append(phone)
+                    continue  # Skip creation
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
+
+        # 2b. Create contact
+        contact_payload = {
+            "phone": phone,
+            "name": name,
+            "tenant": tenant_id
+        }
+
+        try:
+            res = requests.post(
+                "https://backeng4whatsapp-dxbmgpakhzf9bped.centralindia-01.azurewebsites.net/contacts/",
+                json=contact_payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Tenant-Id": tenant_id
+                }
+            )
+            if res.status_code == 201:
+                created_contacts.append(phone)
+            else:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Contact creation failed for {phone}. Response: {res.text}"
+                )
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
+
+    # ✅ Step 3: Add all deduplicated contacts to group
+    response = await add_contacts_to_group(payload, request, db)
+
+    response["created_contacts"] = created_contacts
+    response["existing_contacts_added_to_group"] = existing_contacts
+    print(response)
+    return response
+
+
+@router.post("/broadcast-groups/excel/")
+async def upload_and_add_contacts(
+    request: Request,
+    db: orm.Session = Depends(get_db),
+    file: UploadFile = File(...),
+    name: str = Form(...),
+    model_name: str = Form("Contact"),
+):
+    tenant_id = request.headers.get("X-Tenant-Id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
+
+    # Step 1: Read file content once
+    try:
+        file_bytes = await file.read()
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
+
+    # Step 2: Upload to external API
+    files = {
+        "file": (file.filename, file_bytes, file.content_type),
+    }
+    data = {
+        "model_name": model_name
+    }
+
+    try:
+        response = requests.post(
+            "https://backeng4whatsapp-dxbmgpakhzf9bped.centralindia-01.azurewebsites.net/upload/",
+            data=data,
+            files=files,
+            headers={"X-Tenant-Id": tenant_id}
+        )
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=400, detail=f"Upload failed: {response.text}")
+
+    try:
+        resp_json = response.json()
+        message = resp_json.get("success", "")
+    except Exception:
+        raise HTTPException(status_code=500, detail="Invalid JSON from upload service")
+
+    if "Contacts are being uploaded" not in message:
+        raise HTTPException(status_code=400, detail=f"Upload service error: {message}")
+
+    # Step 3: Parse Excel and normalize phone numbers
+    try:
+        df = pd.read_excel(BytesIO(file_bytes))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
+
+    df.columns = [col.strip().lower() for col in df.columns]
+    print(f"Excel columns found: {df.columns.tolist()}")
+
+    contact_models = []
+
+    for _, row in df.iterrows():
+        raw_phone = str(row.get("phone", "")).strip()
+        name = str(row.get("name", "")).strip() if "name" in df.columns else ""
+
+        print(f"Raw phone: '{raw_phone}', name: '{name}'")
+
+        final_phone = None
+
+        if raw_phone.isdigit():
+            if len(raw_phone) == 12 and raw_phone.startswith("91"):
+                final_phone = raw_phone
+            elif len(raw_phone) == 10:
+                final_phone = f"91{raw_phone}"
+
+        if final_phone:
+            contact_models.append(BroadcastGroupMember(phone=final_phone, name=name or final_phone))
+
+    if not contact_models:
+        raise HTTPException(status_code=400, detail="No valid phone numbers found.")
+
+    # ✅ Step 4: Create typed Pydantic payload
+    payload = BroadcastGroupAddContacts(
+        groupName=name,
+        contacts=contact_models
+    )
+
+    print(payload)
+    return await add_contacts_to_group(payload, request, db)
+
+@router.post("/")
+async def add_contacts_to_group(
+    payload: BroadcastGroupAddContacts,
+    request: Request,
+    db: orm.Session = Depends(get_db)
+):
+    tenant_id = request.headers.get("X-Tenant-Id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
+
+    group = db.query(BroadcastGroups).filter(
+        BroadcastGroups.name == payload.groupName,
+        BroadcastGroups.tenant_id == tenant_id
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Broadcast group not found")
+
+    existing_members = group.members or []
+    existing_phones = {str(member["phone"]) for member in existing_members}
+
+    new_contacts = [
+        {"phone": contact.phone, "name": contact.name or str(contact.phone)}
+        for contact in payload.contacts
+        if str(contact.phone) not in existing_phones
+    ]
+
+    if not new_contacts:
+        raise HTTPException(status_code=400, detail="No new contacts to add")
+
+    group.members = existing_members + new_contacts
+    db.commit()
+
+    return {
+        "message": "Contacts added successfully",
+        "addedContacts": new_contacts,
+        "totalMembers": group.members
+    }
+
+#delete contact from group 
+@router.delete("/broadcast-group/delete-contact/")
+async def delete_contact_from_group(
+    payload: BroadcastGroupContactDelete,
+    request: Request,
+    db: orm.Session = Depends(get_db)
+):
+    tenant_id = request.headers.get("X-Tenant-Id")
+
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
+
+    # Get the group based on name and tenant ID
+    group = db.query(BroadcastGroups).filter(
+        BroadcastGroups.name == payload.groupName,
+        BroadcastGroups.tenant_id == tenant_id
+    ).first()
+
+    if not group:
+        raise HTTPException(status_code=404, detail="Broadcast group not found")
+
+    original_members = group.members or []
+
+    # Filter out the contact with the given phone
+    updated_members = [
+        member for member in original_members
+        if str(member.get("phone")) != str(payload.contactPhone)
+    ]
+
+    # If no contact was removed, it means contact was not in group
+    if len(original_members) == len(updated_members):
+        raise HTTPException(status_code=404, detail="Contact not found in group")
+
+    # Update and save
+    group.members = updated_members
+    db.commit()
+
+    return {
+        "message": "Contact deleted successfully",
+        "groupName": payload.groupName,
+        "remainingMembers": updated_members
+    }
 
 @router.post("/message-statistics/")
 @router.patch("/message-statistics/")
