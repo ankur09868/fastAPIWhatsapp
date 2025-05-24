@@ -397,7 +397,7 @@ def delete_group(group_id: str, db: orm.Session = Depends(get_db), x_tenant_id: 
         print("Error deleting group:", str(e))
         raise HTTPException(status_code=400, detail="Error deleting the broadcast group") from e
 
-#add new contact from broadcast group
+# Add new contact to broadcast group directly
 @router.post("/broadcast-groups/add-contacts/")
 async def create_contact_and_add_to_group(
     payload: BroadcastGroupAddContacts,
@@ -408,42 +408,18 @@ async def create_contact_and_add_to_group(
     if not tenant_id:
         raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
 
-    existing_contacts = []
     created_contacts = []
+    skipped_contacts = []
 
     # ✅ Step 1: Deduplicate contacts by phone number
-    unique_contacts_dict = {}
+    unique_contacts_dict = {contact.phone: contact for contact in payload.contacts}
+    payload.contacts = list(unique_contacts_dict.values())
+
+    # ✅ Step 2: Create contacts (no prior check)
     for contact in payload.contacts:
-        unique_contacts_dict[contact.phone] = contact  # overwrite duplicates
-    deduplicated_contacts = list(unique_contacts_dict.values())
-
-    # Replace payload.contacts with deduplicated list
-    payload.contacts = deduplicated_contacts
-
-    # ✅ Step 2: Process each unique contact
-    for contact in payload.contacts:
-        phone = contact.phone
-        name = contact.name
-
-        # 2a. Check if contact exists
-        try:
-            check_response = requests.get(
-                f"https://backeng4whatsapp-dxbmgpakhzf9bped.centralindia-01.azurewebsites.net/contacts/?phone={phone}",
-                headers={"X-Tenant-Id": tenant_id}
-            )
-
-            if check_response.status_code == 200:
-                data = check_response.json()
-                if data:
-                    existing_contacts.append(phone)
-                    continue  # Skip creation
-        except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Check failed: {str(e)}")
-
-        # 2b. Create contact
         contact_payload = {
-            "phone": phone,
-            "name": name,
+            "phone": contact.phone,
+            "name": contact.name,
             "tenant": tenant_id
         }
 
@@ -457,21 +433,22 @@ async def create_contact_and_add_to_group(
                 }
             )
             if res.status_code == 201:
-                created_contacts.append(phone)
+                created_contacts.append(contact.phone)
             else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Contact creation failed for {phone}. Response: {res.text}"
-                )
+                # Contact might already exist or failed to create
+                skipped_contacts.append({
+                    "phone": contact.phone,
+                    "reason": res.text
+                })
         except requests.exceptions.RequestException as e:
-            raise HTTPException(status_code=500, detail=f"Request failed: {str(e)}")
+            raise HTTPException(status_code=500, detail=f"Contact creation failed: {str(e)}")
 
     # ✅ Step 3: Add all deduplicated contacts to group
     response = await add_contacts_to_group(payload, request, db)
 
     response["created_contacts"] = created_contacts
-    response["existing_contacts_added_to_group"] = existing_contacts
-    print(response)
+    response["skipped_contacts"] = skipped_contacts
+
     return response
 
 
@@ -553,19 +530,16 @@ async def upload_and_add_contacts(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create group: {str(e)}")
 
-    # Step 5: Add contacts to group (optional if already added in creation)
-    payload = BroadcastGroupAddContacts(
-        groupName=name,
-        contacts=contact_models
-    )
+    
+    # ✅ Final response
+    return {
+        "message": "Contacts uploaded and group created successfully.",
+        "group_id": new_group_response.id,
+        "group_name": new_group_response.name,
+        "total_contacts_added": len(contact_models),
+        "contacts": [contact.phone for contact in contact_models]
+    }
 
-    result = await add_contacts_to_group(payload, request, db)
-
-    # Optionally add group info to response
-    result["group_id"] = new_group_response.id
-    result["group_name"] = new_group_response.name
-
-    return result
 
 @router.post("/")
 async def add_contacts_to_group(
