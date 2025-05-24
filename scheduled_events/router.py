@@ -3,17 +3,18 @@ from sqlalchemy import orm
 from config.database import get_db, SessionLocal
 from .models import ScheduledEvent
 from typing import  List, Optional
-from .schema import ScheduledEventCreate, ScheduledEventResponse
+from .schema import ScheduledEventCreate, ScheduledEventResponse , ScheduledEventBase
 from datetime import datetime, timedelta
 import schedule, time as datetime_time, requests, threading
 from collections import deque
-
+import json
 
 
 router = APIRouter()
 
 restart_event = threading.Event()
 
+# ===================== DAILY TASK =====================
 def daily_task():
     print("TASK BOOTS UP")
     now_utc = datetime.utcnow()
@@ -79,7 +80,94 @@ def daily_task():
     finally:
         db.close()
 
+# ===================== GROUP EVENTS FUNCTION =====================
+
+def group_events_for_next_day():
+    print("Grouping next-day events by template name...")
+
+    now_utc = datetime.utcnow()
+    ist_offset = timedelta(hours=5, minutes=30)
+    now_ist = now_utc + ist_offset
+    tomorrow_date = (now_ist + timedelta(days=1)).date()
+
+    db: orm.Session = SessionLocal()
+
+    try:
+        events = db.query(ScheduledEvent).filter(
+            ScheduledEvent.date == tomorrow_date
+        ).all()
+
+        if not events:
+            print("No events scheduled for tomorrow.")
+            return
+
+        grouped_events = {}
+
+        for event in events:
+            value_data = event.value
+            if isinstance(value_data, str):
+                value_data = json.loads(value_data)
+
+            template_name = value_data.get("template", {}).get("name")
+            tenant_id = event.tenant_id
+
+            if template_name and tenant_id:
+                key = (template_name, tenant_id)
+                if key not in grouped_events:
+                    grouped_events[key] = []
+                grouped_events[key].append((event, value_data))
+
+        for (template_name, tenant_id), event_list in grouped_events.items():
+            if len(event_list) <= 1:
+                continue  # ❌ Skip if only one event for this template/tenant
+
+            # ✅ Gather all phone numbers and pick latest time and details
+            all_phone_numbers = set()
+            latest_event = max(event_list, key=lambda x: x[0].time)
+            latest_time = latest_event[0].time
+            template = latest_event[1].get("template")
+            business_id = latest_event[1].get("business_phone_number_id")
+
+            for _, value in event_list:
+                phone_numbers = value.get("phoneNumbers", [])
+                all_phone_numbers.update(phone_numbers)
+
+            group_id = f"{tomorrow_date}-{template_name}-{tenant_id}"
+            merged_value = {
+                "bg_id": "null",
+                "template": template,
+                "business_phone_number_id": business_id,
+                "phoneNumbers": list(all_phone_numbers)
+            }
+
+            merged_event = ScheduledEvent(
+                date=tomorrow_date,
+                time=latest_time,
+                type="Template",
+                value=merged_value,
+                tenant_id=tenant_id
+            )
+
+            db.add(merged_event)
+            db.commit()
+            db.refresh(merged_event)
+
+            print(f"✅ Merged event created for template '{template_name}', tenant '{tenant_id}', time '{latest_time}'")
+
+            # ✅ Delete all the original events after successful merge
+            for original_event, _ in event_list:
+                db.delete(original_event)
+
+            db.commit()
+            print(f"🗑️ Deleted {len(event_list)} individual events for template '{template_name}', tenant '{tenant_id}'")
+
+    finally:
+        db.close()
+
+
+# ===================== SCHEDULER =====================
 schedule.every().day.at("00:00:00").do(daily_task)
+schedule.every().day.at("23:59").do(group_events_for_next_day)
 
 def run_scheduler():
     while True:
@@ -102,7 +190,7 @@ def startup_event():
     scheduler_thread.start()
     restart_event.set()
 
-
+# ===================== ROUTES =====================
 @router.get("/")
 def read_root():
     return {"message": "FastAPI server with scheduled task is running"}
@@ -144,3 +232,32 @@ def delete_scheduled_event(event_id: int, db: orm.Session = Depends(get_db)):
     db.commit()
 
     restart_event.set()
+
+@router.put("/scheduled-events-editing/{event_id}/", response_model=ScheduledEventResponse)
+def update_scheduled_event(
+    event_id: int,
+    updated_event: ScheduledEventBase,
+    x_tenant_id: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID is required in the headers.")
+
+    db_event = db.query(ScheduledEvent).filter(
+        ScheduledEvent.id == event_id,
+        ScheduledEvent.tenant_id == x_tenant_id
+    ).first()
+
+    if not db_event:
+        raise HTTPException(status_code=404, detail="Scheduled event not found or unauthorized")
+
+    # Update fields
+    db_event.type = updated_event.type
+    db_event.date = updated_event.date
+    db_event.time = updated_event.time
+    db_event.value = updated_event.value
+
+    db.commit()
+    db.refresh(db_event)
+
+    return db_event

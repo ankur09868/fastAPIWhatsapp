@@ -11,6 +11,7 @@ from typing import List, Optional
 from contacts.models import Contact
 from datetime import timedelta
 import requests
+from uuid import uuid4  
 
 import pandas as pd
 from io import BytesIO
@@ -481,64 +482,46 @@ async def upload_and_add_contacts(
     file: UploadFile = File(...),
     name: str = Form(...),
     model_name: str = Form("Contact"),
+    x_tenant_id: Optional[str] = Header(None),
 ):
-    tenant_id = request.headers.get("X-Tenant-Id")
-    if not tenant_id:
+    if not x_tenant_id:
         raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
 
-    # Step 1: Read file content once
+    # Step 1: Read file content
     try:
         file_bytes = await file.read()
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to read file: {str(e)}")
 
-    # Step 2: Upload to external API
-    files = {
-        "file": (file.filename, file_bytes, file.content_type),
-    }
-    data = {
-        "model_name": model_name
-    }
-
+    # Step 2: Upload to external API (optional)
     try:
+        files = {"file": (file.filename, file_bytes, file.content_type)}
+        data = {"model_name": model_name}
         response = requests.post(
             "https://backeng4whatsapp-dxbmgpakhzf9bped.centralindia-01.azurewebsites.net/upload/",
             data=data,
             files=files,
-            headers={"X-Tenant-Id": tenant_id}
+            headers={"X-Tenant-Id": x_tenant_id}
         )
+        if response.status_code != 200:
+            raise HTTPException(status_code=400, detail=f"Upload failed: {response.text}")
+        if "Contacts are being uploaded" not in response.json().get("success", ""):
+            raise HTTPException(status_code=400, detail="Unexpected response from upload service")
     except requests.exceptions.RequestException as e:
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-    if response.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Upload failed: {response.text}")
-
-    try:
-        resp_json = response.json()
-        message = resp_json.get("success", "")
-    except Exception:
-        raise HTTPException(status_code=500, detail="Invalid JSON from upload service")
-
-    if "Contacts are being uploaded" not in message:
-        raise HTTPException(status_code=400, detail=f"Upload service error: {message}")
-
-    # Step 3: Parse Excel and normalize phone numbers
+    # Step 3: Parse Excel
     try:
         df = pd.read_excel(BytesIO(file_bytes))
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Failed to parse Excel: {str(e)}")
 
     df.columns = [col.strip().lower() for col in df.columns]
-    print(f"Excel columns found: {df.columns.tolist()}")
-
     contact_models = []
 
     for _, row in df.iterrows():
         raw_phone = str(row.get("phone", "")).strip()
-        name = str(row.get("name", "")).strip() if "name" in df.columns else ""
-
-        print(f"Raw phone: '{raw_phone}', name: '{name}'")
-
+        contact_name = str(row.get("name", "")).strip() if "name" in df.columns else ""
         final_phone = None
 
         if raw_phone.isdigit():
@@ -548,19 +531,41 @@ async def upload_and_add_contacts(
                 final_phone = f"91{raw_phone}"
 
         if final_phone:
-            contact_models.append(BroadcastGroupMember(phone=final_phone, name=name or final_phone))
+            contact_models.append(BroadcastGroupMember(phone=final_phone, name=contact_name or final_phone))
 
     if not contact_models:
         raise HTTPException(status_code=400, detail="No valid phone numbers found.")
 
-    # ✅ Step 4: Create typed Pydantic payload
+    # Step 4: Create new group locally
+    group_id = str(uuid4())
+    group_create_payload = BroadcastGroupCreate(
+        id=group_id,
+        name=name,
+        members=contact_models
+    )
+
+    try:
+        new_group_response = create_group(
+            request=group_create_payload,
+            db=db,
+            x_tenant_id=x_tenant_id
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create group: {str(e)}")
+
+    # Step 5: Add contacts to group (optional if already added in creation)
     payload = BroadcastGroupAddContacts(
         groupName=name,
         contacts=contact_models
     )
 
-    print(payload)
-    return await add_contacts_to_group(payload, request, db)
+    result = await add_contacts_to_group(payload, request, db)
+
+    # Optionally add group info to response
+    result["group_id"] = new_group_response.id
+    result["group_name"] = new_group_response.name
+
+    return result
 
 @router.post("/")
 async def add_contacts_to_group(
@@ -570,7 +575,7 @@ async def add_contacts_to_group(
 ):
     tenant_id = request.headers.get("X-Tenant-Id")
     if not tenant_id:
-        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id header")
+        raise HTTPException(status_code=400, detail="Missing X-Tenant-Id")
 
     group = db.query(BroadcastGroups).filter(
         BroadcastGroups.name == payload.groupName,
