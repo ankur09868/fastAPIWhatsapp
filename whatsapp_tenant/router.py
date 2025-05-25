@@ -12,7 +12,10 @@ from contacts.models import Contact
 from datetime import timedelta
 import requests
 from uuid import uuid4  
-
+from sqlalchemy.exc import IntegrityError
+from fastapi.encoders import jsonable_encoder
+from fastapi.responses import JSONResponse
+import httpx
 import pandas as pd
 from io import BytesIO
 
@@ -89,11 +92,6 @@ async def update_whatsapp_tenant_data(
         print(f"Error occurred while updating tenant data for {x_tenant_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
-
-from sqlalchemy.exc import IntegrityError
-
-from fastapi.encoders import jsonable_encoder
-from fastapi.responses import JSONResponse
 
 @router.get("/refresh-status/")
 def refresh_status(request: Request, db: orm.Session = Depends(get_db)):
@@ -320,9 +318,25 @@ async def set_status(request: Request, db: orm.Session =Depends(get_db)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail="An unexpected error occurred") from e
+# 🔔 Webhook trigger function
+async def trigger_webhook_async(group, tenant_id):
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                "https://nurenaiautomatic-b7hmdnb4fzbpbtbh.canadacentral-01.azurewebsites.net/webhook/template_status",
+                json={
+                    "id": group.id,
+                    "name": group.name,
+                    "members": group.members,
+                    "tenant_id": tenant_id
+                },
+                headers={"Content-Type": "application/json"}
+            )
+    except Exception as e:
+        print("Webhook async failed", str(e))
 
 @router.post("/broadcast-groups/", response_model=BroadcastGroupResponse)
-def create_group(request: BroadcastGroupCreate, db: orm.Session = Depends(get_db) , x_tenant_id : Optional[str] = Header(None)):
+async def create_group(request: BroadcastGroupCreate, db: orm.Session = Depends(get_db) , x_tenant_id : Optional[str] = Header(None)):
     try:
         members = [member.dict() for member in request.members]
 
@@ -338,6 +352,7 @@ def create_group(request: BroadcastGroupCreate, db: orm.Session = Depends(get_db
         db.commit()
         db.refresh(new_group)
 
+        await trigger_webhook_async(new_group, x_tenant_id)
         
         return BroadcastGroupResponse(
             id=new_group.id,
