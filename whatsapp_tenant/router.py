@@ -18,6 +18,7 @@ from fastapi.responses import JSONResponse
 import httpx
 import pandas as pd
 from io import BytesIO
+from uuid import uuid4
 
 router = APIRouter()
 
@@ -318,42 +319,46 @@ async def set_status(request: Request, db: orm.Session =Depends(get_db)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail="An unexpected error occurred") from e
-# 🔔 Webhook trigger function
-async def trigger_webhook_async(group, tenant_id):
-    try:
-        async with httpx.AsyncClient() as client:
-            await client.post(
-                "https://nurenaiautomatic-b7hmdnb4fzbpbtbh.canadacentral-01.azurewebsites.net/webhook/template_status",
-                json={
-                    "id": group.id,
-                    "name": group.name,
-                    "members": group.members,
-                    "tenant_id": tenant_id
-                },
-                headers={"Content-Type": "application/json"}
-            )
-    except Exception as e:
-        print("Webhook async failed", str(e))
+    
+async def create_group_logic(request: BroadcastGroupCreate, db, x_tenant_id):
+    members = [member.dict() for member in request.members]
+    group_id = request.id or str(uuid4())
+    new_group = BroadcastGroups(
+        id=group_id,
+        name=request.name,
+        members=members,
+        tenant_id=x_tenant_id
+    )
+
+    db.add(new_group)
+    db.commit()
+    db.refresh(new_group)
+
+    # await trigger_webhook_async(new_group, x_tenant_id)
+
+    return new_group
+
+# # 🔔 Webhook trigger function
+# async def trigger_webhook_async(group, tenant_id):
+#     try:
+#         async with httpx.AsyncClient() as client:
+#             await client.post(
+#                 "https://nurenaiautomatic-b7hmdnb4fzbpbtbh.canadacentral-01.azurewebsites.net/webhook/template_status",
+#                 json={
+#                     "id": group.id,
+#                     "name": group.name,
+#                     "members": group.members,
+#                     "tenant_id": tenant_id
+#                 },
+#                 headers={"Content-Type": "application/json"}
+#             )
+#     except Exception as e:
+#         print("Webhook async failed", str(e))
 
 @router.post("/broadcast-groups/", response_model=BroadcastGroupResponse)
 async def create_group(request: BroadcastGroupCreate, db: orm.Session = Depends(get_db) , x_tenant_id : Optional[str] = Header(None)):
     try:
-        members = [member.dict() for member in request.members]
-
-        new_group = BroadcastGroups(
-            id=request.id,  # You can generate the ID if not provided
-            name=request.name,
-            members=members,
-            tenant_id = x_tenant_id
-        )
-        print("New Group: ", request.id, request.name, members)
-
-        db.add(new_group)
-        db.commit()
-        db.refresh(new_group)
-
-        await trigger_webhook_async(new_group, x_tenant_id)
-        
+        new_group = await create_group_logic(request, db, x_tenant_id)
         return BroadcastGroupResponse(
             id=new_group.id,
             name=new_group.name,
@@ -537,11 +542,7 @@ async def upload_and_add_contacts(
     )
 
     try:
-        new_group_response = create_group(
-            request=group_create_payload,
-            db=db,
-            x_tenant_id=x_tenant_id
-        )
+        new_group = await create_group_logic(group_create_payload, db, x_tenant_id)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to create group: {str(e)}")
 
@@ -549,8 +550,8 @@ async def upload_and_add_contacts(
     # ✅ Final response
     return {
         "message": "Contacts uploaded and group created successfully.",
-        "group_id": new_group_response.id,
-        "group_name": new_group_response.name,
+        "group_id": new_group.id,
+        "group_name": new_group.name,
         "total_contacts_added": len(contact_models),
         "contacts": [contact.phone for contact in contact_models]
     }

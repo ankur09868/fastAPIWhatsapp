@@ -7,7 +7,7 @@ class BroadcastGroupMember(BaseModel):
     phone: int  
 
 class BroadcastGroupCreate(BaseModel):
-    id: str
+    id: Optional[str] = None
     name: str
     members: Optional[List[BroadcastGroupMember]] = []  
 
