@@ -759,3 +759,9 @@ def delete_whatsapp_prompt(
     db.commit()
 
     return {"tenant_id": x_tenant_id, "message": "Prompt deleted successfully"}
+
+
+@router.get("/tenants/ids")
+def get_all_tenant_ids( db: orm.Session = Depends(get_db)):
+    tenant_ids = db.query(Tenant.id).all()
+    return {"tenant_ids": [tenant_id[0] for tenant_id in tenant_ids]}
