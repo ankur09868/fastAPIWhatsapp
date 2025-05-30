@@ -167,96 +167,188 @@ def daily_task():
 
 #     finally:
 #         db.close()
-def group_events_for_next_day():
-    print("Grouping today's and tomorrow's events by template name...")
 
+@router.post("/events/group", response_model=dict)
+def group_events_for_next_day(tenant_id: str = Header(...), db: orm.Session = Depends(get_db)):
+
+    print(f"🔍 Grouping today's and tomorrow's events for tenant_id: {tenant_id}")
+
+    # Get current IST date
     now_utc = datetime.utcnow()
     ist_offset = timedelta(hours=5, minutes=30)
     now_ist = now_utc + ist_offset
     today_date = now_ist.date()
     tomorrow_date = (now_ist + timedelta(days=1)).date()
 
-    db: orm.Session = SessionLocal()
+    # Query events for today and tomorrow, only for this tenant
+    events = db.query(ScheduledEvent).filter(
+        ScheduledEvent.date.in_([today_date, tomorrow_date]),
+        ScheduledEvent.tenant_id == tenant_id
+    ).all()
 
-    try:
-        # 🟡 Get events for both today and tomorrow
-        events = db.query(ScheduledEvent).filter(
-            ScheduledEvent.date.in_([today_date, tomorrow_date])
-        ).all()
+    if not events:
+        return {"message": "No events scheduled for today or tomorrow for this tenant."}
 
-        if not events:
-            print("No events scheduled for today or tomorrow.")
-            return
+    grouped_events = {}
 
-        grouped_events = {}
+    for event in events:
+        value_data = event.value
+        if isinstance(value_data, str):
+            value_data = json.loads(value_data)
 
-        for event in events:
-            value_data = event.value
-            if isinstance(value_data, str):
-                value_data = json.loads(value_data)
+        template_name = value_data.get("template", {}).get("name")
 
-            template_name = value_data.get("template", {}).get("name")
-            tenant_id = event.tenant_id
+        if template_name:
+            key = (template_name, event.date)
+            if key not in grouped_events:
+                grouped_events[key] = []
+            grouped_events[key].append({
+                "id": event.id,
+                "time": event.time,
+                "value": value_data,
+                "date": event.date
+            })
 
-            if template_name and tenant_id:
-                key = (template_name, tenant_id, event.date)  # include date in key
-                if key not in grouped_events:
-                    grouped_events[key] = []
-                grouped_events[key].append({
-                    "id": event.id,
-                    "time": event.time,
-                    "value": value_data,
-                    "date": event.date
-                })
+    result = []
 
-        for (template_name, tenant_id, event_date), event_list in grouped_events.items():
-            if len(event_list) <= 1:
-                continue
+    for (template_name, event_date), event_list in grouped_events.items():
+        if len(event_list) <= 1:
+            continue  # no need to merge if only 1
 
-            latest_event = max(event_list, key=lambda x: x["time"])
-            latest_time = latest_event["time"]
-            template = latest_event["value"].get("template")
-            business_id = latest_event["value"].get("business_phone_number_id")
+        latest_event = max(event_list, key=lambda x: x["time"])
+        latest_time = latest_event["time"]
+        template = latest_event["value"].get("template")
+        business_id = latest_event["value"].get("business_phone_number_id")
 
-            all_phone_numbers = set()
-            for event in event_list:
-                phone_numbers = event["value"].get("phoneNumbers", [])
-                all_phone_numbers.update(phone_numbers)
+        # Merge phone numbers from all events
+        all_phone_numbers = set()
+        for event in event_list:
+            phone_numbers = event["value"].get("phoneNumbers", [])
+            all_phone_numbers.update(phone_numbers)
 
-            merged_value = {
-                "bg_id": "null",
-                "template": template,
-                "business_phone_number_id": business_id,
-                "phoneNumbers": list(all_phone_numbers)
-            }
+        merged_value = {
+            "bg_id": "null",
+            "template": template,
+            "business_phone_number_id": business_id,
+            "phoneNumbers": list(all_phone_numbers)
+        }
 
-            merged_event = ScheduledEvent(
-                date=event_date,
-                time=latest_time,
-                type="Template",
-                value=merged_value,
-                tenant_id=tenant_id
-            )
+        # Create the merged event
+        merged_event = ScheduledEvent(
+            date=event_date,
+            time=latest_time,
+            type="Template",
+            value=merged_value,
+            tenant_id=tenant_id
+        )
 
-            db.add(merged_event)
-            db.commit()
-            db.refresh(merged_event)
+        db.add(merged_event)
+        db.commit()
+        db.refresh(merged_event)
 
-            print(f"✅ Merged event created for template '{template_name}', tenant '{tenant_id}', date '{event_date}', time '{latest_time}'")
+        # Delete old events
+        event_ids_to_delete = [e["id"] for e in event_list]
+        db.query(ScheduledEvent).filter(ScheduledEvent.id.in_(event_ids_to_delete)).delete(synchronize_session=False)
+        db.commit()
 
-            event_ids_to_delete = [e["id"] for e in event_list]
-            db.query(ScheduledEvent).filter(ScheduledEvent.id.in_(event_ids_to_delete)).delete(synchronize_session=False)
-            db.commit()
+        result.append({
+            "merged_event_id": merged_event.id,
+            "template_name": template_name,
+            "event_date": str(event_date),
+            "deleted_event_ids": event_ids_to_delete
+        })
 
-            print(f"🗑️ Deleted {len(event_list)} individual events for template '{template_name}', tenant '{tenant_id}', date '{event_date}'")
+    return {"message": "Events grouped and merged successfully.", "results": result}
 
-    finally:
-        db.close()
+# def group_events_for_next_day():
+#     print("Grouping today's and tomorrow's events by template name...")
+
+#     now_utc = datetime.utcnow()
+#     ist_offset = timedelta(hours=5, minutes=30)
+#     now_ist = now_utc + ist_offset
+#     today_date = now_ist.date()
+#     tomorrow_date = (now_ist + timedelta(days=1)).date()
+
+#     db: orm.Session = SessionLocal()
+
+#     try:
+#         # 🟡 Get events for both today and tomorrow
+#         events = db.query(ScheduledEvent).filter(
+#             ScheduledEvent.date.in_([today_date, tomorrow_date])
+#         ).all()
+
+#         if not events:
+#             print("No events scheduled for today or tomorrow.")
+#             return
+
+#         grouped_events = {}
+
+#         for event in events:
+#             value_data = event.value
+#             if isinstance(value_data, str):
+#                 value_data = json.loads(value_data)
+
+#             template_name = value_data.get("template", {}).get("name")
+#             tenant_id = event.tenant_id
+
+#             if template_name and tenant_id:
+#                 key = (template_name, tenant_id, event.date)  # include date in key
+#                 if key not in grouped_events:
+#                     grouped_events[key] = []
+#                 grouped_events[key].append({
+#                     "id": event.id,
+#                     "time": event.time,
+#                     "value": value_data,
+#                     "date": event.date
+#                 })
+
+#         for (template_name, tenant_id, event_date), event_list in grouped_events.items():
+#             if len(event_list) <= 1:
+#                 continue
+
+#             latest_event = max(event_list, key=lambda x: x["time"])
+#             latest_time = latest_event["time"]
+#             template = latest_event["value"].get("template")
+#             business_id = latest_event["value"].get("business_phone_number_id")
+
+#             all_phone_numbers = set()
+#             for event in event_list:
+#                 phone_numbers = event["value"].get("phoneNumbers", [])
+#                 all_phone_numbers.update(phone_numbers)
+
+#             merged_value = {
+#                 "bg_id": "null",
+#                 "template": template,
+#                 "business_phone_number_id": business_id,
+#                 "phoneNumbers": list(all_phone_numbers)
+#             }
+
+#             merged_event = ScheduledEvent(
+#                 date=event_date,
+#                 time=latest_time,
+#                 type="Template",
+#                 value=merged_value,
+#                 tenant_id=tenant_id
+#             )
+
+#             db.add(merged_event)
+#             db.commit()
+#             db.refresh(merged_event)
+
+#             print(f"✅ Merged event created for template '{template_name}', tenant '{tenant_id}', date '{event_date}', time '{latest_time}'")
+
+#             event_ids_to_delete = [e["id"] for e in event_list]
+#             db.query(ScheduledEvent).filter(ScheduledEvent.id.in_(event_ids_to_delete)).delete(synchronize_session=False)
+#             db.commit()
+
+#             print(f"🗑️ Deleted {len(event_list)} individual events for template '{template_name}', tenant '{tenant_id}', date '{event_date}'")
+
+#     finally:
+#         db.close()
 
 
 # ===================== SCHEDULER =====================
 schedule.every().day.at("00:00:00").do(daily_task)
-schedule.every().day.at("23:30").do(group_events_for_next_day)
 
 def run_scheduler():
     print("[SCHEDULER] Started")
