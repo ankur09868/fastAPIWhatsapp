@@ -765,3 +765,43 @@ def delete_whatsapp_prompt(
 def get_all_tenant_ids( db: orm.Session = Depends(get_db)):
     tenant_ids = db.query(Tenant.id).all()
     return {"tenant_ids": [tenant_id[0] for tenant_id in tenant_ids]}
+
+from fastapi import APIRouter, Depends, HTTPException
+from typing import Any, Dict
+from node_templates.models import  NodeTemplate # Your model
+from convertFlow.convert_flow import convert_flow
+
+
+router = APIRouter()
+
+@router.get("/flow/{node_template_id}/", response_model=Dict[str, Any])
+async def get_node_template_flow(node_template_id: int, db: orm.Session = Depends(get_db)):
+    node_template = db.query(NodeTemplate).filter(NodeTemplate.id == node_template_id).first()
+
+    if not node_template:
+        raise HTTPException(status_code=404, detail="NodeTemplate not found")
+    
+    if not node_template.node_data:
+        raise HTTPException(status_code=400, detail="No node_data available in the template")
+
+    tenant = node_template.tenant
+    if not tenant:
+        raise HTTPException(status_code=400, detail="No tenant linked with the template")
+
+    try:
+        flow_data, adj_list, start_node, _ = convert_flow(node_template.node_data, tenant)
+
+        if flow_data is None or adj_list is None:
+            raise HTTPException(status_code=500, detail="Failed to convert flow data")
+
+        return {
+            "flowData": flow_data,
+            "adjList": adj_list,
+            "flowName": node_template.name,
+            "startNode": start_node,
+            "fallback_msg": node_template.fallback_msg,
+            "fallback_count": node_template.fallback_count
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
