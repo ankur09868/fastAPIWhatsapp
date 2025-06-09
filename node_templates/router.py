@@ -37,3 +37,77 @@ def get_node_temps(node_template_id : int, x_tenant_id: Optional[str] = Header(N
     node_temp = db.query(NodeTemplate).filter(NodeTemplate.id == node_template_id).first()
 
     return node_temp
+
+from fastapi import Body
+
+@router.post("/flows/{id}")
+def update_trigger_flow(
+    id: int,
+    data: dict = Body(...),
+    db: orm.Session = Depends(get_db),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID is missing")
+
+    node_template = db.query(NodeTemplate).filter(
+        NodeTemplate.id == id,
+        NodeTemplate.tenant_id == x_tenant_id
+    ).first()
+
+    if not node_template:
+        raise HTTPException(status_code=404, detail="NodeTemplate not found")
+
+    node_template.trigger = data.get("trigger", node_template.trigger)
+
+    db.commit()
+    db.refresh(node_template)
+
+    return {"message": f"{node_template.name} updated successfully", "data": {
+        "id": node_template.id,
+        "name": node_template.name,
+        "trigger": node_template.trigger
+    }}
+
+@router.get("/flows/")
+def get_flows_with_trigger(
+    db: orm.Session = Depends(get_db),
+    x_tenant_id: Optional[str] = Header(None),
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID is missing")
+
+    node_templates = db.query(NodeTemplate).filter(
+        NodeTemplate.tenant_id == x_tenant_id,
+        NodeTemplate.trigger.isnot(None),           # filter where trigger is not None
+        NodeTemplate.trigger != ""                   # optionally exclude empty string triggers
+    ).all()
+
+    if not node_templates:
+        raise HTTPException(status_code=404, detail="No NodeTemplates with trigger found")
+
+    return [
+        {"id": nt.id, "name": nt.name, "trigger": nt.trigger} for nt in node_templates
+    ]
+
+@router.delete("/flows-delete/{node_template_id}/")
+def delete_trigger_only(
+    node_template_id: int,
+    db: orm.Session = Depends(get_db),
+    x_tenant_id: Optional[str] = Header(None)
+):
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID is missing")
+
+    node_template = db.query(NodeTemplate).filter(
+        NodeTemplate.id == node_template_id,
+        NodeTemplate.tenant_id == x_tenant_id
+    ).first()
+
+    if not node_template:
+        raise HTTPException(status_code=404, detail="Flow not found")
+
+    node_template.trigger = None
+    db.commit()
+
+    return {"message": f"Trigger for '{node_template.name}' cleared successfully"}
