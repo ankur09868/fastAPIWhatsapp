@@ -19,42 +19,63 @@ import httpx
 import pandas as pd
 from io import BytesIO
 from uuid import uuid4
+from node_templates.models import NodeTemplate
 
 router = APIRouter()
 
-@router.get("/whatsapp_tenant/")
-def get_whatsapp_tenant_data(x_tenant_id: Optional[str] = Header(None), bpid: Optional[str] = Header(None), db: orm.Session = Depends(get_db)):
+
+@router.get("/whatsapp_tenant")
+def get_whatsapp_tenant_data(
+    x_tenant_id: Optional[str] = Header(None),
+    bpid: Optional[str] = Header(None),
+    db: orm.Session = Depends(get_db)
+):
     try:
-        # Retrieve WhatsappTenantData for the specified tenant
         print("TENANT AND BPID:", x_tenant_id, bpid)
 
         if x_tenant_id:
             if x_tenant_id == "demo":
                 x_tenant_id = 'ai'
-            whatsapp_data = db.query(WhatsappTenantData).filter(WhatsappTenantData.tenant_id == x_tenant_id).order_by(WhatsappTenantData.id.asc()).all()
+            whatsapp_data = db.query(WhatsappTenantData)\
+                              .filter(WhatsappTenantData.tenant_id == x_tenant_id)\
+                              .order_by(WhatsappTenantData.id.asc()).all()
             if not whatsapp_data:
                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for tenant")
             tenant_id = x_tenant_id
+
         elif bpid:
-            whatsapp_data = db.query(WhatsappTenantData).filter(WhatsappTenantData.business_phone_number_id == bpid).all()
+            whatsapp_data = db.query(WhatsappTenantData)\
+                              .filter(WhatsappTenantData.business_phone_number_id == bpid).all()
             if not whatsapp_data:
                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for bpid")
             tenant_id = whatsapp_data[0].tenant_id
-            # print("Tenant:", tenant_id)
-            
+
         else:
             raise HTTPException(status_code=400, detail="Either Tenant-ID or BPID header must be provided")
 
-        # catalog_data = db.query(Product).filter(Product.tenant_id == tenant_id).all()
-        # print("catalog: ", catalog_data)
+        # Get tenant
         tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if not tenantData:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+
+        # Get agents
         agents = tenantData.agents
-        whatsapp_data.append({"agents": agents})
+
+        # Get relevant fields from NodeTemplate
+        node_templates = db.query(NodeTemplate.id, NodeTemplate.name, NodeTemplate.trigger)\
+                           .filter(NodeTemplate.tenant_id == tenant_id).all()
+
+        # Convert to list of dicts
+        node_template_data = [
+            {"id": nt.id, "name": nt.name, "trigger": nt.trigger}
+            for nt in node_templates if nt.trigger
+        ]
         return {
-            "whatsapp_data": whatsapp_data
-            # "catalog_data": catalog_data
+            "whatsapp_data": whatsapp_data,
+            "agents": agents,
+            "triggers": node_template_data
         }
-    
+
     except Exception as e:
         print("Error occurred with tenant:", x_tenant_id)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")

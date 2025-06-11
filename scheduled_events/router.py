@@ -69,6 +69,12 @@ def daily_task():
                     )
                     if response.status_code == 200:
                         print(f"Event '{event.type}' processed successfully.")
+                        db_event = db.query(ScheduledEvent).filter(ScheduledEvent.id == event.id).first()
+                        if db_event:
+                            db.delete(db_event)
+                            db.commit()
+                            print(f"Deleted scheduled event with ID: {event.id}")
+                        
                     else:
                         print(f"Failed to process event '{event.type}'. Status code: {response.status_code}")
 
