@@ -20,6 +20,8 @@ import pandas as pd
 from io import BytesIO
 from uuid import uuid4
 from node_templates.models import NodeTemplate
+import json
+from config.redis import redis_client
 
 router = APIRouter()
 
@@ -33,6 +35,16 @@ def get_whatsapp_tenant_data(
     try:
         print("TENANT AND BPID:", x_tenant_id, bpid)
 
+        # Cache key
+        cache_key = f"whatsapp_tenant:{x_tenant_id or bpid}"
+
+        # Check Redis cache first
+        cached_response = redis_client.get(cache_key)
+        if cached_response:
+            print("[CACHE HIT] Returning cached response")
+            return json.loads(cached_response)
+        print(f"[CACHE MISS] Fetching from DB for key: {cache_key}")
+        # --- original DB fetch logic below ---
         if x_tenant_id:
             if x_tenant_id == "demo":
                 x_tenant_id = 'ai'
@@ -58,27 +70,88 @@ def get_whatsapp_tenant_data(
         if not tenantData:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
-        # Get agents
         agents = tenantData.agents
 
-        # Get relevant fields from NodeTemplate
         node_templates = db.query(NodeTemplate.id, NodeTemplate.name, NodeTemplate.trigger)\
                            .filter(NodeTemplate.tenant_id == tenant_id).all()
 
-        # Convert to list of dicts
         node_template_data = [
             {"id": nt.id, "name": nt.name, "trigger": nt.trigger}
             for nt in node_templates if nt.trigger
         ]
-        return {
-            "whatsapp_data": whatsapp_data,
-            "agents": agents,
+
+        response_data = {
+            "whatsapp_data": jsonable_encoder(whatsapp_data),
+            "agents": jsonable_encoder(agents),
             "triggers": node_template_data
         }
+
+        # Cache the response in Redis for 5 minutes (300 seconds)
+        redis_client.setex(cache_key,300, json.dumps(response_data))
+        print(f"[CACHE SET] Cached response for key: {cache_key} with 300s TTL")
+
+        return response_data
 
     except Exception as e:
         print("Error occurred with tenant:", x_tenant_id)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+
+
+# @router.get("/whatsapp_tenant")
+# def get_whatsapp_tenant_data(
+#     x_tenant_id: Optional[str] = Header(None),
+#     bpid: Optional[str] = Header(None),
+#     db: orm.Session = Depends(get_db)
+# ):
+#     try:
+#         print("TENANT AND BPID:", x_tenant_id, bpid)
+
+#         if x_tenant_id:
+#             if x_tenant_id == "demo":
+#                 x_tenant_id = 'ai'
+#             whatsapp_data = db.query(WhatsappTenantData)\
+#                               .filter(WhatsappTenantData.tenant_id == x_tenant_id)\
+#                               .order_by(WhatsappTenantData.id.asc()).all()
+#             if not whatsapp_data:
+#                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for tenant")
+#             tenant_id = x_tenant_id
+
+#         elif bpid:
+#             whatsapp_data = db.query(WhatsappTenantData)\
+#                               .filter(WhatsappTenantData.business_phone_number_id == bpid).all()
+#             if not whatsapp_data:
+#                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for bpid")
+#             tenant_id = whatsapp_data[0].tenant_id
+
+#         else:
+#             raise HTTPException(status_code=400, detail="Either Tenant-ID or BPID header must be provided")
+
+#         # Get tenant
+#         tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+#         if not tenantData:
+#             raise HTTPException(status_code=404, detail="Tenant not found")
+
+#         # Get agents
+#         agents = tenantData.agents
+
+#         # Get relevant fields from NodeTemplate
+#         node_templates = db.query(NodeTemplate.id, NodeTemplate.name, NodeTemplate.trigger)\
+#                            .filter(NodeTemplate.tenant_id == tenant_id).all()
+
+#         # Convert to list of dicts
+#         node_template_data = [
+#             {"id": nt.id, "name": nt.name, "trigger": nt.trigger}
+#             for nt in node_templates if nt.trigger
+#         ]
+#         return {
+#             "whatsapp_data": whatsapp_data,
+#             "agents": agents,
+#             "triggers": node_template_data
+#         }
+
+#     except Exception as e:
+#         print("Error occurred with tenant:", x_tenant_id)
+#         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 @router.patch("/whatsapp_tenant/")
 async def update_whatsapp_tenant_data(
