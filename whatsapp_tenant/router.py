@@ -21,9 +21,24 @@ from io import BytesIO
 from uuid import uuid4
 from node_templates.models import NodeTemplate
 import json
-from config.redis import redis_client
+from config.cache import custom_cache,get_cache,set_cache,CACHE_TTL,cache_lock  # <-- if you moved functions to cache.py
 
 router = APIRouter()
+
+
+@router.post("/reset-cache")
+def reset_cache(x_tenant_id: str = Header(default=None), bpid: str = Header(default=None)):
+    if not x_tenant_id and not bpid:
+        raise HTTPException(status_code=400, detail="Either X-Tenant-Id or bpid must be provided.")
+
+    key = f"whatsapp_tenant:{x_tenant_id or bpid}"
+
+    with cache_lock:
+        if key in custom_cache:
+            del custom_cache[key]
+            return JSONResponse(content={"message": f"Cache cleared for key: {key}"})
+        else:
+            return JSONResponse(content={"message": f"No cache entry found for key: {key}"})
 
 
 @router.get("/whatsapp_tenant")
@@ -35,16 +50,19 @@ def get_whatsapp_tenant_data(
     try:
         print("TENANT AND BPID:", x_tenant_id, bpid)
 
-        # Cache key
+        # Generate cache key
         cache_key = f"whatsapp_tenant:{x_tenant_id or bpid}"
 
-        # Check Redis cache first
-        cached_response = redis_client.get(cache_key)
+        # ✅ Use custom in-memory cache
+        cached_response = get_cache(cache_key)
+        print("cache key",cache_key)
         if cached_response:
             print("[CACHE HIT] Returning cached response")
-            return json.loads(cached_response)
+            return cached_response
+
         print(f"[CACHE MISS] Fetching from DB for key: {cache_key}")
-        # --- original DB fetch logic below ---
+
+        # --- original DB logic ---
         if x_tenant_id:
             if x_tenant_id == "demo":
                 x_tenant_id = 'ai'
@@ -65,13 +83,11 @@ def get_whatsapp_tenant_data(
         else:
             raise HTTPException(status_code=400, detail="Either Tenant-ID or BPID header must be provided")
 
-        # Get tenant
         tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenantData:
             raise HTTPException(status_code=404, detail="Tenant not found")
 
         agents = tenantData.agents
-
         node_templates = db.query(NodeTemplate.id, NodeTemplate.name, NodeTemplate.trigger)\
                            .filter(NodeTemplate.tenant_id == tenant_id).all()
 
@@ -86,15 +102,85 @@ def get_whatsapp_tenant_data(
             "triggers": node_template_data
         }
 
-        # Cache the response in Redis for 5 minutes (300 seconds)
-        redis_client.setex(cache_key,300, json.dumps(response_data))
-        print(f"[CACHE SET] Cached response for key: {cache_key} with 300s TTL")
+        # ✅ Set cache
+        set_cache(cache_key, response_data)
+        print(f"[CACHE SET] Key: {cache_key}, TTL: {CACHE_TTL}")
 
         return response_data
 
     except Exception as e:
         print("Error occurred with tenant:", x_tenant_id)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
+    
+# @router.get("/whatsapp_tenant")
+# def get_whatsapp_tenant_data(
+#     x_tenant_id: Optional[str] = Header(None),
+#     bpid: Optional[str] = Header(None),
+#     db: orm.Session = Depends(get_db)
+# ):
+#     try:
+#         print("TENANT AND BPID:", x_tenant_id, bpid)
+
+#         # Cache key
+#         cache_key = f"whatsapp_tenant:{x_tenant_id or bpid}"
+
+#         # Check Redis cache first
+#         cached_response = redis_client.get(cache_key)
+#         if cached_response:
+#             print("[CACHE HIT] Returning cached response")
+#             return json.loads(cached_response)
+#         print(f"[CACHE MISS] Fetching from DB for key: {cache_key}")
+#         # --- original DB fetch logic below ---
+#         if x_tenant_id:
+#             if x_tenant_id == "demo":
+#                 x_tenant_id = 'ai'
+#             whatsapp_data = db.query(WhatsappTenantData)\
+#                               .filter(WhatsappTenantData.tenant_id == x_tenant_id)\
+#                               .order_by(WhatsappTenantData.id.asc()).all()
+#             if not whatsapp_data:
+#                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for tenant")
+#             tenant_id = x_tenant_id
+
+#         elif bpid:
+#             whatsapp_data = db.query(WhatsappTenantData)\
+#                               .filter(WhatsappTenantData.business_phone_number_id == bpid).all()
+#             if not whatsapp_data:
+#                 raise HTTPException(status_code=404, detail="WhatsappTenantData not found for bpid")
+#             tenant_id = whatsapp_data[0].tenant_id
+
+#         else:
+#             raise HTTPException(status_code=400, detail="Either Tenant-ID or BPID header must be provided")
+
+#         # Get tenant
+#         tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+#         if not tenantData:
+#             raise HTTPException(status_code=404, detail="Tenant not found")
+
+#         agents = tenantData.agents
+
+#         node_templates = db.query(NodeTemplate.id, NodeTemplate.name, NodeTemplate.trigger)\
+#                            .filter(NodeTemplate.tenant_id == tenant_id).all()
+
+#         node_template_data = [
+#             {"id": nt.id, "name": nt.name, "trigger": nt.trigger}
+#             for nt in node_templates if nt.trigger
+#         ]
+
+#         response_data = {
+#             "whatsapp_data": jsonable_encoder(whatsapp_data),
+#             "agents": jsonable_encoder(agents),
+#             "triggers": node_template_data
+#         }
+
+#         # Cache the response in Redis for 5 minutes (300 seconds)
+#         redis_client.setex(cache_key,300, json.dumps(response_data))
+#         print(f"[CACHE SET] Cached response for key: {cache_key} with 300s TTL")
+
+#         return response_data
+
+#     except Exception as e:
+#         print("Error occurred with tenant:", x_tenant_id)
+#         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
 
 
 # @router.get("/whatsapp_tenant")
