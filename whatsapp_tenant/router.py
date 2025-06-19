@@ -28,7 +28,7 @@ router = APIRouter()
 
 @router.post("/reset-cache")
 def reset_cache(bpid: str = Header(default=None)):
-    if bpid:
+    if not bpid:
         raise HTTPException(status_code=400, detail="Either X-Tenant-Id or bpid must be provided.")
 
     key = f"whatsapp_tenant:{bpid}"
