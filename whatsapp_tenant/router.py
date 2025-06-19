@@ -40,7 +40,6 @@ def reset_cache(bpid: str = Header(default=None)):
         else:
             return JSONResponse(content={"message": f"No cache entry found for key: {key}"})
 
-
 @router.get("/whatsapp_tenant")
 def get_whatsapp_tenant_data(
     x_tenant_id: Optional[str] = Header(None),
@@ -50,38 +49,76 @@ def get_whatsapp_tenant_data(
     try:
         print("TENANT AND BPID:", x_tenant_id, bpid)
 
-        # Generate cache key
-        cache_key = f"whatsapp_tenant:{x_tenant_id or bpid}"
+        # -----------------------------
+        # 1. Resolve tenant_id and bpid
+        # -----------------------------
 
-        # ✅ Use custom in-memory cache
+        if x_tenant_id:
+            if x_tenant_id == "demo":
+                x_tenant_id = "ai"
+
+            # Try getting BPID from cache
+            bpid = get_cache(f"tenant_to_bpid:{x_tenant_id}")
+            if not bpid:
+                print("[CACHE MISS] tenant_to_bpid")
+                record = db.query(WhatsappTenantData.business_phone_number_id)\
+                           .filter(WhatsappTenantData.tenant_id == x_tenant_id)\
+                           .order_by(WhatsappTenantData.id.asc())\
+                           .first()
+                if not record:
+                    raise HTTPException(status_code=404, detail="BPID not found for tenant")
+
+                bpid = str(record.business_phone_number_id)
+                # Cache both directions
+                set_cache(f"tenant_to_bpid:{x_tenant_id}", bpid)
+                set_cache(f"bpid_to_tenant:{bpid}", x_tenant_id)
+
+            tenant_id = x_tenant_id
+
+        elif bpid:
+            # Try getting tenant_id from cache
+            tenant_id = get_cache(f"bpid_to_tenant:{bpid}")
+            if not tenant_id:
+                print("[CACHE MISS] bpid_to_tenant")
+                record = db.query(WhatsappTenantData.tenant_id)\
+                           .filter(WhatsappTenantData.business_phone_number_id == bpid)\
+                           .first()
+                if not record:
+                    raise HTTPException(status_code=404, detail="Tenant ID not found for BPID")
+
+                tenant_id = str(record.tenant_id)
+                # Cache both directions
+                set_cache(f"bpid_to_tenant:{bpid}", tenant_id)
+                set_cache(f"tenant_to_bpid:{tenant_id}", bpid)
+
+        else:
+            raise HTTPException(status_code=400, detail="Either X-Tenant-Id or BPID header must be provided")
+
+        # --------------------------------------
+        # 2. Use bpid for main cache key always
+        # --------------------------------------
+
+        cache_key = f"whatsapp_tenant:{bpid}"
         cached_response = get_cache(cache_key)
-        print("cache key",cache_key)
+        print("cache key", cache_key)
         if cached_response:
             print("[CACHE HIT] Returning cached response")
             return cached_response
 
-        print(f"[CACHE MISS] Fetching from DB for key: {cache_key}")
+        print(f"[CACHE MISS] Fetching full data for key: {cache_key}")
 
-        # --- original DB logic ---
-        if x_tenant_id:
-            if x_tenant_id == "demo":
-                x_tenant_id = 'ai'
-            whatsapp_data = db.query(WhatsappTenantData)\
-                              .filter(WhatsappTenantData.tenant_id == x_tenant_id)\
-                              .order_by(WhatsappTenantData.id.asc()).all()
-            if not whatsapp_data:
-                raise HTTPException(status_code=404, detail="WhatsappTenantData not found for tenant")
-            tenant_id = x_tenant_id
+        # --------------------------------------
+        # 3. Fetch main WhatsappTenantData data
+        # --------------------------------------
 
-        elif bpid:
-            whatsapp_data = db.query(WhatsappTenantData)\
-                              .filter(WhatsappTenantData.business_phone_number_id == bpid).all()
-            if not whatsapp_data:
-                raise HTTPException(status_code=404, detail="WhatsappTenantData not found for bpid")
-            tenant_id = whatsapp_data[0].tenant_id
+        whatsapp_data = db.query(WhatsappTenantData)\
+                          .filter(WhatsappTenantData.business_phone_number_id == bpid).all()
+        if not whatsapp_data:
+            raise HTTPException(status_code=404, detail="WhatsappTenantData not found")
 
-        else:
-            raise HTTPException(status_code=400, detail="Either Tenant-ID or BPID header must be provided")
+        # --------------------------------------
+        # 4. Fetch tenant, agents, triggers
+        # --------------------------------------
 
         tenantData = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenantData:
@@ -96,13 +133,16 @@ def get_whatsapp_tenant_data(
             for nt in node_templates if nt.trigger
         ]
 
+        # --------------------------------------
+        # 5. Build and cache response
+        # --------------------------------------
+
         response_data = {
             "whatsapp_data": jsonable_encoder(whatsapp_data),
             "agents": jsonable_encoder(agents),
             "triggers": node_template_data
         }
 
-        # ✅ Set cache
         set_cache(cache_key, response_data)
         print(f"[CACHE SET] Key: {cache_key}, TTL: {CACHE_TTL}")
 
@@ -111,7 +151,7 @@ def get_whatsapp_tenant_data(
     except Exception as e:
         print("Error occurred with tenant:", x_tenant_id)
         raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-    
+
 # @router.get("/whatsapp_tenant")
 # def get_whatsapp_tenant_data(
 #     x_tenant_id: Optional[str] = Header(None),
