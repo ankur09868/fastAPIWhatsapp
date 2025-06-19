@@ -27,11 +27,11 @@ router = APIRouter()
 
 
 @router.post("/reset-cache")
-def reset_cache(x_tenant_id: str = Header(default=None), bpid: str = Header(default=None)):
-    if not x_tenant_id and not bpid:
+def reset_cache(bpid: str = Header(default=None)):
+    if bpid:
         raise HTTPException(status_code=400, detail="Either X-Tenant-Id or bpid must be provided.")
 
-    key = f"whatsapp_tenant:{x_tenant_id or bpid}"
+    key = f"whatsapp_tenant:{bpid}"
 
     with cache_lock:
         if key in custom_cache:
