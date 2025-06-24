@@ -38,6 +38,12 @@ app.include_router(catalog.router.router)
 app.include_router(broadcast_analytics.router.router)
 
 
+# Health check endpoint (for keep-alive pings)
+@app.get("/health")
+def health_check():
+    return {"status": "FastApi Code is healthy"}
+
+# Root test endpoint
 @app.get("/")
 def read_root():
     return {"message": "FastAPI server is running"}
